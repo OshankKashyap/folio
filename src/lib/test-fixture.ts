@@ -2,7 +2,7 @@ import type { Workspace } from "./types";
 
 export function fixture(): Workspace {
   return {
-    settings: { name: "Test workspace", accentColor: "#b8aaf7" },
+    settings: { name: "Test workspace", accentColor: "#b8aaf7", fontFamily: "" },
     databases: [
       { id: 1, name: "Projects", description: "A little structure for everything you’re building.", icon: "layers" },
       { id: 2, name: "Reading list", description: "Good ideas start with a good book.", icon: "book" },

@@ -24,6 +24,15 @@ export const api = {
   createDatabase(name: string): Promise<Workspace> {
     return invoke("create_database", { name });
   },
+  setFontFamily(fontFamily: string): Promise<Workspace> {
+    return invoke("set_font_family", { fontFamily });
+  },
+  getDefaultFont(): Promise<string> {
+    return invoke("get_default_font");
+  },
+  checkFontAvailable(fontFamily: string): Promise<boolean> {
+    return invoke("check_font_available", { fontFamily });
+  },
   update(input: RecordInput): Promise<Workspace> {
     return invoke("update_record", { input });
   },

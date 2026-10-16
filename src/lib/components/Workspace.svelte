@@ -28,6 +28,7 @@
   import StatusBadge from "./StatusBadge.svelte";
   import WorkspaceSetup from "./WorkspaceSetup.svelte";
   import { accentInk } from "$lib/theme";
+  import { applyFont, checkFontAvailable } from "$lib/fonts";
 
   let workspace = $state<Workspace>({ settings: null, databases: [], views: [], records: [] });
   let loading = $state(true);
@@ -39,6 +40,7 @@
   let sidebarOpen = $state(true);
   let settingsOpen = $state(false);
   let preferencesOpen = $state(false);
+  let fontFamily = $state("");
   let databaseId = $state<number | null>(null);
   let selectedViews = $state<Record<number, number>>({});
   let editing = $state<RecordItem | null>(null);
@@ -65,6 +67,9 @@
     error = "";
     try {
       workspace = await api.load();
+      const font = workspace.settings?.fontFamily ?? "";
+      fontFamily = font && await checkFontAvailable(font) ? font : "";
+      applyFont(fontFamily);
     } catch (cause) {
       loadFailed = true;
       error = errorMessage(cause);
@@ -90,6 +95,12 @@
 
   async function setupWorkspace(name: string, accentColor: string) {
     await mutate(() => api.setup(name, accentColor));
+  }
+
+  async function saveFont(font: string): Promise<boolean> {
+    const saved = await mutate(() => api.setFontFamily(font));
+    if (saved) fontFamily = font;
+    return saved;
   }
 
   async function createDatabase() {
@@ -204,7 +215,7 @@
 
 <svelte:head><meta name="description" content="Folio — a calm, local-first database workspace." /></svelte:head>
 
-<div style:--accent={accent} style:--accent-ink={accentInk(accent)}>
+<div style:--accent={accent} style:--accent-ink={accentInk(accent)} style:visibility={loading ? "hidden" : undefined}>
 {#if !loading && !loadFailed && !workspace.settings}
   <WorkspaceSetup {busy} {error} onSubmit={setupWorkspace} />
 {:else}
@@ -353,7 +364,7 @@
 {/if}
 
 {#if preferencesOpen}
-  <SettingsPanel onClose={closePreferences} />
+  <SettingsPanel {fontFamily} {busy} {error} onSave={saveFont} onClose={closePreferences} />
 {/if}
 </div>
 
@@ -366,7 +377,7 @@
   .caption { color: var(--sub); font-size: 11px; letter-spacing: 1px; padding: 20px 10px 8px; }
   .db { width: 100%; margin: 2px 0; color: #b7b8c1; }
   .db.active { background: var(--accent-soft); color: var(--accent-text); }
-  .side-bottom { margin-top: auto; color: var(--sub); padding: 28px 10px 0; font-size: 12px; }
+  .side-bottom { margin-top: auto; color: var(--sub); padding: 28px 10px 0; font-size: 12px; font-weight: 500; }
   .side-bottom .identity-text { position: relative; }
   .side-bottom .identity-text div { padding-top: 8px; overflow-wrap: anywhere; }
   .side-bottom small { font-size: 11px; color: #737680; }
@@ -376,7 +387,7 @@
   main { grid-column: 1; grid-row: 1; min-width: 0; }
   .sidebar-open > main { grid-column: 2; }
   .chrome { min-height: 56px; border-bottom: 1px solid var(--line); padding: 0 22px; display: flex; align-items: center; gap: 12px; color: var(--sub); font-size: 12px; }
-  .path { flex: 1; }
+  .path { flex: 1; font-weight: 500; }
   .path > span:first-child { margin: 0 8px; color: #61636e; }
   .current-path { color: #c8c9d0; }
   .local-indicator { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; white-space: nowrap; }
@@ -391,8 +402,8 @@
   .toolbar { display: flex; align-items: center; gap: 5px; padding: 16px 0; flex-wrap: wrap; font-size: 12px; }
   button.on { color: var(--accent-text); background: var(--accent-soft); }
   .table-wrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 12px; }
-  th { font-weight: 400; color: var(--sub); background: #1c1d21; text-align: left; padding: 10px 12px; border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 12px; font-weight: 500; }
+  th { font-weight: 500; color: var(--sub); background: #1c1d21; text-align: left; padding: 10px 12px; border: 1px solid var(--line); }
   .column-icon { margin-right: 7px; color: #777a86; }
   td { padding: 13px 12px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
   td:first-child { border-left: 1px solid var(--line); }

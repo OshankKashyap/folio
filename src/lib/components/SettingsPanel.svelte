@@ -1,13 +1,56 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import X from "@lucide/svelte/icons/x";
+  import { applyFont, checkFontAvailable } from "$lib/fonts";
+  import { api } from "$lib/api";
 
-  let { onClose }: { onClose: () => void } = $props();
+  let { fontFamily, busy, error, onSave, onClose }: {
+    fontFamily: string;
+    busy: boolean;
+    error: string;
+    onSave: (font: string) => Promise<boolean>;
+    onClose: () => void;
+  } = $props();
 
   let dialog: HTMLDialogElement;
   let closeButton: HTMLButtonElement;
+  let font = $state(untrack(() => fontFamily));
+  let notFound = $state(false);
+  let defaultFont = $state("");
+  let category = $state("interface");
+  let timer: ReturnType<typeof setTimeout>;
+  let revision = 0;
+  let active = true;
 
-  onMount(() => { dialog.showModal(); closeButton.focus(); });
+  onMount(() => {
+    dialog.showModal(); closeButton.focus();
+    void api.getDefaultFont().then((family) => { if (active) defaultFont = family; }).catch(() => {});
+    return () => { active = false; clearTimeout(timer); };
+  });
+
+  async function updateFont() {
+    if (busy) { scheduleFont(); return; }
+    const currentRevision = revision;
+    const family = font.trim();
+    const available = !family || await checkFontAvailable(family);
+    if (!active || currentRevision !== revision) return;
+    notFound = !available;
+    applyFont(notFound ? "" : family);
+    if (!notFound && !await onSave(family)) applyFont(fontFamily);
+  }
+
+  function scheduleFont() {
+    revision++;
+    clearTimeout(timer);
+    timer = setTimeout(() => { void updateFont(); }, 300);
+  }
+
+  function resetFont() {
+    revision++;
+    clearTimeout(timer);
+    font = "";
+    void updateFont();
+  }
 </script>
 
 <dialog bind:this={dialog} aria-labelledby="settings-heading" oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={(event) => { if (event.target === dialog) onClose(); }}>
@@ -15,13 +58,45 @@
     <h2 id="settings-heading">Settings</h2>
     <button type="button" bind:this={closeButton} class="icon-button" aria-label="Close settings" onclick={onClose}><X size={18} /></button>
   </header>
-  <p>No settings yet.</p>
+  <div class="body">
+    <nav aria-label="Settings categories">
+      <button type="button" aria-current={category === "interface" ? "page" : undefined} aria-controls="interface-settings" onclick={() => category = "interface"}>Interface</button>
+    </nav>
+    <section id="interface-settings" aria-labelledby="interface-heading" hidden={category !== "interface"}>
+      <h3 id="interface-heading">Interface</h3>
+      <div class="font-row">
+        <label for="settings-font">Font</label>
+        <input id="settings-font" maxlength="200" placeholder={defaultFont ? `Auto (${defaultFont})` : "Auto"} bind:value={font} oninput={scheduleFont} aria-describedby="font-hint" />
+      </div>
+      <p id="font-hint" aria-live="polite">{notFound ? "Font not found on this system — using default." : ""}</p>
+      <button type="button" disabled={busy} onclick={resetFont}>Reset to default</button>
+      {#if error}<p class="save-error" role="alert">{error}</p>{/if}
+    </section>
+  </div>
 </dialog>
 
 <style>
-  dialog { width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - var(--titlebar-height) - 32px); padding: 26px; color: var(--text); background: #202125; border: 1px solid #383941; border-radius: 12px; box-shadow: 0 24px 80px #0005; }
+  dialog { width: min(800px, calc(100vw - 48px)); height: min(520px, calc(100dvh - var(--titlebar-height) - 48px)); max-height: calc(100dvh - var(--titlebar-height) - 48px); padding: 26px; color: var(--text); background: #202125; border: 1px solid #383941; border-radius: 12px; box-shadow: 0 24px 80px #0005; overflow: auto; }
   dialog::backdrop { background: #08090bb8; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  dialog[open] { display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
   h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -.6px; }
-  p { margin: 18px 0 0; color: var(--sub); font-size: 13px; }
+  .body { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 20px; margin-top: 24px; overflow: auto; min-height: 0; flex: 1; }
+  nav { border-right: 1px solid var(--line); padding-right: 12px; }
+  nav button { width: 100%; font-size: 14px; }
+  nav button[aria-current="page"] { background: var(--accent-soft); color: var(--accent-text); font-weight: 700; }
+  section { min-width: 0; }
+  h3 { margin: 0 0 18px; font-size: 15px; font-weight: 600; }
+  .font-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 12px; }
+  label { font-size: 12px; color: #bcbec8; min-width: 0; }
+  input { width: 100%; background: #18191c; border: 1px solid #3b3c44; border-radius: 6px; padding: 9px 10px; color: var(--text); min-width: 0; }
+  p { margin: 8px 0; color: var(--sub); font-size: 12px; }
+  p:empty { display: none; }
+  .save-error { color: #f1bbc2; }
+  @media (max-width: 480px) {
+    dialog { padding: 18px; }
+    .body { grid-template-columns: 88px minmax(0, 1fr); gap: 12px; }
+    nav { padding-right: 8px; }
+    nav button { padding: 7px 6px; }
+  }
 </style>

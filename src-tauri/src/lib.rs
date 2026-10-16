@@ -1,4 +1,5 @@
 mod db;
+mod fonts;
 mod window_layout;
 
 use db::{AppError, Database, RecordInput, SavedView, Workspace};
@@ -18,6 +19,16 @@ async fn setup_workspace(
 ) -> Result<Workspace, AppError> {
     database
         .run(move |connection| db::setup_workspace(connection, &name, &accent_color))
+        .await
+}
+
+#[tauri::command]
+async fn set_font_family(
+    database: State<'_, Database>,
+    font_family: String,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| db::set_font_family(connection, &font_family))
         .await
 }
 
@@ -94,6 +105,20 @@ async fn get_window_button_layout() -> WindowButtonLayout {
         })
 }
 
+#[tauri::command]
+async fn get_default_font() -> Result<String, &'static str> {
+    tauri::async_runtime::spawn_blocking(fonts::default_font)
+        .await
+        .map_err(|_| "System font detection is unavailable.")?
+}
+
+#[tauri::command]
+async fn check_font_available(font_family: String) -> Result<bool, &'static str> {
+    tauri::async_runtime::spawn_blocking(move || fonts::is_available(&font_family))
+        .await
+        .map_err(|_| "System font detection is unavailable.")?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -107,6 +132,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_workspace,
             setup_workspace,
+            set_font_family,
+            get_default_font,
+            check_font_available,
             create_database,
             create_record,
             update_record,

@@ -75,7 +75,7 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 2 {
+    if version > 3 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
@@ -85,6 +85,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 2 {
         transaction.execute_batch(include_str!("../migrations/002_workspace_setup.sql"))?;
+    }
+    if version < 3 {
+        transaction.execute_batch(include_str!("../migrations/003_interface_font.sql"))?;
     }
     transaction.commit()?;
     Ok(())
@@ -140,6 +143,7 @@ pub struct RecordInput {
 pub struct WorkspaceSettings {
     name: String,
     accent_color: String,
+    font_family: String,
 }
 
 #[derive(Serialize)]
@@ -153,12 +157,13 @@ pub struct Workspace {
 pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
     let settings = connection
         .query_row(
-            "SELECT name, accent_color FROM workspace_settings WHERE id = 1",
+            "SELECT name, accent_color, font_family FROM workspace_settings WHERE id = 1",
             [],
             |row| {
                 Ok(WorkspaceSettings {
                     name: row.get(0)?,
                     accent_color: row.get(1)?,
+                    font_family: row.get(2)?,
                 })
             },
         )
@@ -215,6 +220,26 @@ pub fn setup_workspace(
         return Err(AppError::invalid(
             "This workspace is already set up. Reload to continue.",
         ));
+    }
+    load(connection)
+}
+
+pub fn set_font_family(
+    connection: &mut Connection,
+    font_family: &str,
+) -> Result<Workspace, AppError> {
+    let font_family = font_family.trim();
+    if font_family.chars().count() > 200 || font_family.chars().any(char::is_control) {
+        return Err(AppError::invalid(
+            "Enter a font family name (up to 200 characters).",
+        ));
+    }
+    if connection.execute(
+        "UPDATE workspace_settings SET font_family = ?1 WHERE id = 1",
+        [font_family],
+    )? == 0
+    {
+        return Err(AppError::missing());
     }
     load(connection)
 }
@@ -386,12 +411,12 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        db.pragma_update(None, "user_version", 3).unwrap();
+        db.pragma_update(None, "user_version", 4).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -520,6 +545,7 @@ mod tests {
             let mut db = Connection::open(&path).unwrap();
             migrate(&mut db).unwrap();
             setup_workspace(&mut db, "My workspace", "#91baff").unwrap();
+            set_font_family(&mut db, "Liberation Sans").unwrap();
             let workspace = create_database(&mut db, "Tasks").unwrap();
             create_record(&mut db, workspace.databases[0].id, "Done").unwrap();
             let mut view = load(&mut db).unwrap().views.remove(0);
@@ -533,6 +559,7 @@ mod tests {
         let settings = workspace.settings.unwrap();
         assert_eq!(settings.name, "My workspace");
         assert_eq!(settings.accent_color, "#91baff");
+        assert_eq!(settings.font_family, "Liberation Sans");
         assert!(!workspace.views[0].show_owner);
         drop(db);
         std::fs::remove_file(path).unwrap();
@@ -567,6 +594,79 @@ mod tests {
         assert_eq!(workspace.databases[0].name, "Tasks");
         assert_eq!(workspace.views.len(), 1);
         assert!(workspace.records.is_empty());
+    }
+
+    #[test]
+    fn font_migration_preserves_existing_workspace_rows() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("../migrations/001_workspace.sql"))
+            .unwrap();
+        db.execute_batch(include_str!("../migrations/002_workspace_setup.sql"))
+            .unwrap();
+        db.execute_batch(include_str!("test_seed.sql")).unwrap();
+        db.execute("INSERT INTO workspace_settings (id, name, accent_color) VALUES (1, 'Keep me', '#91baff')", []).unwrap();
+        let snapshot = |db: &Connection| {
+            ["databases", "saved_views", "records"].map(|table| {
+                let mut statement = db
+                    .prepare(&format!("SELECT * FROM {table} ORDER BY id"))
+                    .unwrap();
+                let columns = statement.column_count();
+                statement
+                    .query_map([], |row| {
+                        (0..columns)
+                            .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap()
+            })
+        };
+        let before = snapshot(&db);
+        migrate(&mut db).unwrap();
+        assert_eq!(snapshot(&db), before);
+        let settings = load(&mut db).unwrap().settings.unwrap();
+        assert_eq!(settings.name, "Keep me");
+        assert_eq!(settings.accent_color, "#91baff");
+        assert_eq!(settings.font_family, "");
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        migrate(&mut db).unwrap();
+        assert_eq!(snapshot(&db), before);
+    }
+
+    #[test]
+    fn font_preference_supports_auto_and_validates_input() {
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        assert!(set_font_family(&mut db, "Font").is_err());
+        setup_workspace(&mut db, "Home", "#91baff").unwrap();
+        assert_eq!(
+            set_font_family(&mut db, "  Liberation Sans  ")
+                .unwrap()
+                .settings
+                .unwrap()
+                .font_family,
+            "Liberation Sans"
+        );
+        for font in ["x".repeat(201), "Bad\nFont".into()] {
+            assert!(set_font_family(&mut db, &font).is_err());
+        }
+        assert_eq!(
+            load(&mut db).unwrap().settings.unwrap().font_family,
+            "Liberation Sans"
+        );
+        assert_eq!(
+            set_font_family(&mut db, "")
+                .unwrap()
+                .settings
+                .unwrap()
+                .font_family,
+            ""
+        );
     }
 
     #[test]

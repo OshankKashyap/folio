@@ -1,27 +1,39 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { api } from "$lib/api";
 import { fixture } from "$lib/test-fixture";
 import type { Workspace as WorkspaceData } from "$lib/types";
 import Workspace from "./Workspace.svelte";
+import settingsSource from "./SettingsPanel.svelte?raw";
+import workspaceSource from "./Workspace.svelte?raw";
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn() } };
 });
 
 let data: WorkspaceData;
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   data = fixture();
   vi.mocked(api.load).mockImplementation(async () => structuredClone(data));
+  document.documentElement.style.removeProperty("--app-font");
+  vi.mocked(api.getDefaultFont).mockResolvedValue("Noto Sans Display");
+  vi.mocked(api.checkFontAvailable).mockImplementation(async (font) => font === "Installed Font");
+  vi.mocked(api.setFontFamily).mockImplementation(async (fontFamily) => {
+    data.settings!.fontFamily = fontFamily;
+    return structuredClone(data);
+  });
   vi.mocked(api.saveView).mockImplementation(async (view) => {
     data.views = data.views.map((item) => item.id === view.id ? view : item);
     return structuredClone(data);
   });
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 async function openWorkspace() {
   const user = userEvent.setup();
@@ -31,6 +43,14 @@ async function openWorkspace() {
 }
 
 describe("Folio workspace", () => {
+  it("uses medium weight for table text, breadcrumbs, and workspace details without changing heading weight", () => {
+    for (const selector of [".side-bottom", ".path", "table", "th"]) {
+      const rule = workspaceSource.split(`${selector} {`)[1].split("}")[0];
+      expect(rule, selector).toContain("font-weight: 500;");
+    }
+    expect(workspaceSource.split("h1 {")[1].split("}")[0]).toContain("font-weight: 600;");
+  });
+
   it("keeps navigation and main content in the same layout container when toggling the sidebar", async () => {
     const user = await openWorkspace();
     const main = screen.getByRole("main");
@@ -49,7 +69,7 @@ describe("Folio workspace", () => {
 
   it.each([["Teal", "#5ecfca"], ["Amber", "#f5cd6f"]])("saves the %s accent preset", async (label, accentColor) => {
     data = { settings: null, databases: [], views: [], records: [] };
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "" } });
     const user = userEvent.setup();
     render(Workspace);
     await user.type(await screen.findByLabelText("Workspace name"), "Home");
@@ -62,7 +82,7 @@ describe("Folio workspace", () => {
   it("sets up an empty workspace and creates its first database without sample records", async () => {
     data = { settings: null, databases: [], views: [], records: [] };
     vi.mocked(api.setup).mockImplementation(async (name, accentColor) => {
-      data.settings = { name, accentColor };
+      data.settings = { name, accentColor, fontFamily: "" };
       return structuredClone(data);
     });
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
@@ -103,14 +123,14 @@ describe("Folio workspace", () => {
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save workspace.");
     expect(name).toHaveProperty("value", "Home");
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456" } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "" } });
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     await screen.findByRole("heading", { name: "Welcome to Home" });
     expect(api.setup).toHaveBeenLastCalledWith("Home", "#123456");
   });
 
   it("shows database creation errors without leaving the empty workspace", async () => {
-    data = { settings: { name: "Home", accentColor: "#b8aaf7" }, databases: [], views: [], records: [] };
+    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "" }, databases: [], views: [], records: [] };
     vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
     const user = userEvent.setup();
     render(Workspace);
@@ -233,14 +253,196 @@ describe("Folio workspace", () => {
     await screen.findByRole("dialog");
   });
 
-  it("opens the empty settings panel and moves focus into it", async () => {
+  it("opens Interface settings with the Font input and moves focus into it", async () => {
     const user = await openWorkspace();
     const button = screen.getByRole("button", { name: "Settings" });
     await user.click(button);
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("heading", { name: "Settings" })).toBeTruthy();
-    expect(within(dialog).getByText("No settings yet.")).toBeTruthy();
+    expect(within(dialog).getByRole("heading", { name: "Interface" })).toBeTruthy();
+    const categories = within(dialog).getByRole("navigation", { name: "Settings categories" });
+    const category = within(categories).getByRole("button", { name: "Interface" });
+    expect(category.tagName).toBe("BUTTON");
+    expect(category.getAttribute("aria-current")).toBe("page");
+    expect(category.getAttribute("aria-controls")).toBe("interface-settings");
+    expect(categories.parentElement).toBe(within(dialog).getByRole("region", { name: "Interface" }).parentElement);
     expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close settings" }));
+    category.focus();
+    await user.keyboard("{Enter}");
+    expect(category.getAttribute("aria-current")).toBe("page");
+    expect(within(dialog).getByLabelText("Font")).toHaveProperty("placeholder", "Auto (Noto Sans Display)");
+    expect(within(dialog).getByLabelText("Font").parentElement).toBe(within(dialog).getByText("Font", { selector: "label" }).parentElement);
+    expect(within(dialog).queryByText("Auto — Noto Sans Display")).toBeNull();
+    expect(dialog.querySelector("#font-hint")?.textContent).toBe("");
+  });
+
+  it("debounces live font preview, persists available fonts, and resets to Auto", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const input = screen.getByLabelText("Font");
+    await fireEvent.input(input, { target: { value: "Installed" } });
+    await fireEvent.input(input, { target: { value: "Installed Font" } });
+    expect(api.setFontFamily).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.setFontFamily).toHaveBeenCalledExactlyOnceWith("Installed Font"));
+    expect(api.checkFontAvailable).toHaveBeenCalledExactlyOnceWith("Installed Font");
+    expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled();
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe('"Installed Font", var(--default-app-font)');
+    await user.click(screen.getByRole("button", { name: "Reset to default" }));
+    await waitFor(() => expect(api.setFontFamily).toHaveBeenLastCalledWith(""));
+    expect(input).toHaveProperty("value", "");
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe("");
+    expect(input).toHaveProperty("placeholder", "Auto (Noto Sans Display)");
+    expect(screen.queryByText("Auto — Noto Sans Display")).toBeNull();
+  });
+
+  it("uses the generic Auto placeholder without a duplicate caption when default-font detection fails", async () => {
+    vi.mocked(api.getDefaultFont).mockRejectedValue("Font detection unavailable");
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByLabelText("Font")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("Font")).toHaveProperty("placeholder", "Auto");
+    expect(screen.queryByText("Auto — using the default font.")).toBeNull();
+  });
+
+  it("uses the width heuristic only when the Rust availability command fails", async () => {
+    vi.mocked(api.checkFontAvailable).mockRejectedValue("Font detection unavailable");
+    const context = {
+      font: "",
+      measureText: () => ({ width: context.font.includes('"Installed Font"') ? 250 : context.font.endsWith("monospace") ? 100 : context.font.endsWith("sans-serif") ? 120 : 140 }),
+    };
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await fireEvent.input(screen.getByLabelText("Font"), { target: { value: "Installed Font" } });
+    await waitFor(() => expect(api.setFontFamily).toHaveBeenCalledWith("Installed Font"));
+    expect(HTMLCanvasElement.prototype.getContext).toHaveBeenCalledWith("2d");
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe('"Installed Font", var(--default-app-font)');
+  });
+
+  it("keeps the default font when both availability checks fail", async () => {
+    vi.mocked(api.getDefaultFont).mockRejectedValue("Font detection unavailable");
+    vi.mocked(api.checkFontAvailable).mockRejectedValue("Font detection unavailable");
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementation(() => { throw new Error("No measurement context"); });
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await fireEvent.input(screen.getByLabelText("Font"), { target: { value: "Unknown" } });
+    await screen.findByText("Font not found on this system — using default.");
+    expect(api.setFontFamily).not.toHaveBeenCalled();
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe("");
+    await user.click(screen.getByRole("button", { name: "Reset to default" }));
+    expect(screen.getByLabelText("Font")).toHaveProperty("placeholder", "Auto");
+    expect(screen.queryByText("Auto — using the default font.")).toBeNull();
+  });
+
+  it("ignores stale availability results after the input changes", async () => {
+    let finishCheck!: (available: boolean) => void;
+    vi.mocked(api.checkFontAvailable).mockImplementationOnce(() => new Promise((resolve) => { finishCheck = resolve; }));
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const input = screen.getByLabelText("Font");
+    await fireEvent.input(input, { target: { value: "Old Font" } });
+    await waitFor(() => expect(api.checkFontAvailable).toHaveBeenCalledWith("Old Font"));
+    await fireEvent.input(input, { target: { value: "Installed Font" } });
+    finishCheck(false);
+    await waitFor(() => expect(api.setFontFamily).toHaveBeenCalledExactlyOnceWith("Installed Font"));
+    expect(screen.queryByText("Font not found on this system — using default.")).toBeNull();
+  });
+
+  it("falls back without persisting an unavailable font and clears the hint when cleared", async () => {
+    data.settings!.fontFamily = "Installed Font";
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const input = screen.getByLabelText("Font");
+    await fireEvent.input(input, { target: { value: "Nonsense" } });
+    await screen.findByText("Font not found on this system — using default.");
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe("");
+    expect(api.setFontFamily).not.toHaveBeenCalled();
+    expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled();
+    await fireEvent.input(input, { target: { value: "" } });
+    await waitFor(() => expect(api.setFontFamily).toHaveBeenCalledWith(""));
+    expect(screen.queryByText("Font not found on this system — using default.")).toBeNull();
+  });
+
+  it("clears the unavailable hint when a font applies and restores the preference after remount", async () => {
+    const user = userEvent.setup();
+    const mounted = render(Workspace);
+    await screen.findByRole("heading", { name: "Projects" });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await fireEvent.input(screen.getByLabelText("Font"), { target: { value: "Nonsense" } });
+    await screen.findByText("Font not found on this system — using default.");
+    await fireEvent.input(screen.getByLabelText("Font"), { target: { value: "Installed Font" } });
+    await waitFor(() => expect(api.setFontFamily).toHaveBeenCalledWith("Installed Font"));
+    expect(screen.queryByText("Font not found on this system — using default.")).toBeNull();
+    mounted.unmount();
+    document.documentElement.style.removeProperty("--app-font");
+    render(Workspace);
+    await screen.findByRole("heading", { name: "Projects" });
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe('"Installed Font", var(--default-app-font)');
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByLabelText("Font")).toHaveProperty("value", "Installed Font");
+  });
+
+  it("keeps a missing saved font in Auto after other workspace mutations", async () => {
+    data.settings!.fontFamily = "Missing Font";
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Sort" }));
+    await waitFor(() => expect(api.saveView).toHaveBeenCalled());
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByLabelText("Font")).toHaveProperty("value", "");
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe("");
+  });
+
+  it("keeps typing focused during a slow save and saves the latest input afterwards", async () => {
+    let finishSave!: (workspace: WorkspaceData) => void;
+    vi.mocked(api.setFontFamily).mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+    vi.mocked(api.checkFontAvailable).mockResolvedValue(true);
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const input = screen.getByLabelText("Font");
+    await user.click(input);
+    await fireEvent.input(input, { target: { value: "First Font" } });
+    await waitFor(() => expect(api.setFontFamily).toHaveBeenCalledWith("First Font"));
+    expect(document.activeElement).toBe(input);
+    expect(input).toHaveProperty("disabled", false);
+    await fireEvent.input(input, { target: { value: "Latest Font" } });
+    data.settings!.fontFamily = "First Font";
+    finishSave(structuredClone(data));
+    await waitFor(() => expect(api.setFontFamily).toHaveBeenLastCalledWith("Latest Font"));
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe('"Latest Font", var(--default-app-font)');
+  });
+
+  it.each(["Installed Font", "Missing Font"])("loads %s before revealing the workspace and shows the effective setting", async (font) => {
+    data.settings!.fontFamily = font;
+    const mounted = render(Workspace);
+    expect(mounted.container.firstElementChild?.getAttribute("style")).toContain("visibility: hidden");
+    await screen.findByRole("heading", { name: "Projects" });
+    const available = font === "Installed Font";
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe(available ? '"Installed Font", var(--default-app-font)' : "");
+    expect(mounted.container.firstElementChild?.getAttribute("style")).not.toContain("visibility: hidden");
+    await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByLabelText("Font")).toHaveProperty("value", available ? font : "");
+    expect(screen.queryByText("Font not found on this system — using default.")).toBeNull();
+  });
+
+  it("shows font save errors and restores the saved font", async () => {
+    vi.mocked(api.setFontFamily).mockRejectedValue({ message: "Could not save font." });
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await fireEvent.input(screen.getByLabelText("Font"), { target: { value: "Installed Font" } });
+    expect(await within(screen.getByRole("dialog")).findByRole("alert")).toHaveProperty("textContent", "Could not save font.");
+    expect(document.documentElement.style.getPropertyValue("--app-font")).toBe("");
+  });
+
+  it("uses viewport sizing and a scrolling settings body", () => {
+    expect(settingsSource).toContain("width: min(800px, calc(100vw - 48px))");
+    expect(settingsSource).toContain("height: min(520px, calc(100dvh - var(--titlebar-height) - 48px))");
+    expect(settingsSource).toContain("max-height: calc(100dvh - var(--titlebar-height) - 48px)");
+    expect(settingsSource).toMatch(/\.body\s*\{[^}]*overflow: auto/);
+    expect(settingsSource).toContain("grid-template-columns: 120px minmax(0, 1fr)");
+    expect(settingsSource).toContain("grid-template-columns: 88px minmax(0, 1fr)");
+    expect(settingsSource).toMatch(/nav button\s*\{[^}]*font-size: 14px/);
+    expect(settingsSource).toMatch(/nav button\[aria-current="page"\]\s*\{[^}]*font-weight: 700/);
+    expect(settingsSource).toMatch(/\.font-row\s*\{[^}]*grid-template-columns: 64px minmax\(0, 1fr\)/);
   });
 
   it("closes the settings panel from its close button and returns focus to the sidebar control", async () => {
