@@ -1,7 +1,9 @@
 mod db;
+mod window_layout;
 
 use db::{AppError, Database, RecordInput, SavedView, Workspace};
 use tauri::{Manager, State};
+use window_layout::WindowButtonLayout;
 
 #[tauri::command]
 async fn load_workspace(database: State<'_, Database>) -> Result<Workspace, AppError> {
@@ -82,6 +84,16 @@ async fn reorder_record(
         .await
 }
 
+#[tauri::command]
+async fn get_window_button_layout() -> WindowButtonLayout {
+    tauri::async_runtime::spawn_blocking(window_layout::detect)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("Window button layout detection failed: {error}");
+            window_layout::default_layout()
+        })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -100,7 +112,8 @@ pub fn run() {
             update_record,
             delete_record,
             update_view,
-            reorder_record
+            reorder_record,
+            get_window_button_layout
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

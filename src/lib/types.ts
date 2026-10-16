@@ -40,3 +40,10 @@ export interface Workspace {
   views: SavedView[];
   records: RecordItem[];
 }
+
+export type WindowButton = "close" | "maximize" | "minimize";
+
+export interface WindowButtonLayout {
+  left: WindowButton[];
+  right: WindowButton[];
+}

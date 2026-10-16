@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { RecordInput, SavedView, Status, Workspace } from "./types";
+import type { RecordInput, SavedView, Status, WindowButtonLayout, Workspace } from "./types";
 
 export function errorMessage(error: unknown): string {
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
@@ -35,5 +35,8 @@ export const api = {
   },
   reorder(databaseId: number, recordId: number, targetId: number, after: boolean): Promise<Workspace> {
     return invoke("reorder_record", { databaseId, recordId, targetId, after });
+  },
+  getWindowButtonLayout(): Promise<WindowButtonLayout> {
+    return invoke("get_window_button_layout");
   },
 };
