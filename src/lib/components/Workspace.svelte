@@ -16,6 +16,7 @@
   import PanelLeft from "@lucide/svelte/icons/panel-left";
   import Plus from "@lucide/svelte/icons/plus";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+  import Settings from "@lucide/svelte/icons/settings";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import Table2 from "@lucide/svelte/icons/table-2";
   import X from "@lucide/svelte/icons/x";
@@ -23,6 +24,7 @@
   import { formatDate, visibleRecords } from "$lib/records";
   import { statuses, type Layout, type RecordInput, type RecordItem, type SavedView, type Workspace } from "$lib/types";
   import RecordEditor from "./RecordEditor.svelte";
+  import SettingsPanel from "./SettingsPanel.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import WorkspaceSetup from "./WorkspaceSetup.svelte";
   import { accentInk } from "$lib/theme";
@@ -36,11 +38,13 @@
   let announcement = $state("");
   let sidebarOpen = $state(true);
   let settingsOpen = $state(false);
+  let preferencesOpen = $state(false);
   let databaseId = $state<number | null>(null);
   let selectedViews = $state<Record<number, number>>({});
   let editing = $state<RecordItem | null>(null);
   let selectedRow = $state<number | null>(null);
   let recordsElement = $state<HTMLDivElement>();
+  let settingsButton = $state<HTMLButtonElement>();
   let drag = $state<{ recordId: number; startX: number; startY: number; targetId: number | null; after: boolean; moved: boolean } | null>(null);
   let suppressGripClick = false;
   const accent = $derived(workspace.settings?.accentColor ?? "#b8aaf7");
@@ -103,6 +107,11 @@
     if (!database) return;
     selectedViews[database.id] = id;
     selectedRow = null;
+  }
+
+  function closePreferences() {
+    preferencesOpen = false;
+    settingsButton?.focus();
   }
 
   async function updateView(changes: Partial<SavedView>) {
@@ -212,7 +221,7 @@
           </button>
         {/each}
       </nav>
-      <div class="side-bottom"><span class="avatar">{initials}</span><div>{workspace.settings?.name ?? "Your workspace"}</div><small>Local workspace</small></div>
+      <div class="side-bottom"><span class="avatar">{initials}</span><div class="identity-text"><div>{workspace.settings?.name ?? "Your workspace"}</div><small>Local workspace</small><button bind:this={settingsButton} class="icon-button settings-button" aria-label="Settings" aria-haspopup="dialog" onclick={() => preferencesOpen = true}><Settings size={16} /></button></div></div>
     </aside>
   {/if}
 
@@ -342,6 +351,10 @@
     <RecordEditor record={editing} {busy} {error} onSave={saveRecord} onDelete={deleteRecord} onClose={() => { editing = null; error = ""; }} />
   {/key}
 {/if}
+
+{#if preferencesOpen}
+  <SettingsPanel onClose={closePreferences} />
+{/if}
 </div>
 
 <style>
@@ -354,9 +367,12 @@
   .db { width: 100%; margin: 2px 0; color: #b7b8c1; }
   .db.active { background: var(--accent-soft); color: var(--accent-text); }
   .side-bottom { margin-top: auto; color: var(--sub); padding: 28px 10px 0; font-size: 12px; }
-  .side-bottom div { padding-top: 8px; overflow-wrap: anywhere; }
+  .side-bottom .identity-text { position: relative; }
+  .side-bottom .identity-text div { padding-top: 8px; overflow-wrap: anywhere; }
   .side-bottom small { font-size: 11px; color: #737680; }
   .avatar { background: var(--accent-soft); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; color: var(--accent-text); font-size: 11px; }
+  .settings-button { position: absolute; top: 50%; right: 0; transform: translateY(-50%); color: var(--sub); }
+  .settings-button:hover:not(:disabled) { color: var(--text); }
   main { grid-column: 1; grid-row: 1; min-width: 0; }
   .sidebar-open > main { grid-column: 2; }
   .chrome { min-height: 56px; border-bottom: 1px solid var(--line); padding: 0 22px; display: flex; align-items: center; gap: 12px; color: var(--sub); font-size: 12px; }
@@ -437,7 +453,10 @@
     aside { width: 100%; border-right: 0; border-bottom: 1px solid var(--line); padding: 12px; display: block; }
     .brand { padding-bottom: 8px; }
     .db { width: auto; font-size: 12px; }
-    .caption, .side-bottom { display: none; }
+    .caption { display: none; }
+    .side-bottom { display: flex; justify-content: flex-end; margin: 0; padding: 8px 0 0; }
+    .side-bottom > .avatar, .side-bottom .identity-text > div, .side-bottom .identity-text > small { display: none; }
+    .side-bottom .settings-button { position: static; transform: none; }
     h1 { font-size: 24px; }
     .tabs { gap: 0; }
     .tabs button { font-size: 12px; padding: 10px 7px; }

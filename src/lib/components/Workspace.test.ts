@@ -215,6 +215,57 @@ describe("Folio workspace", () => {
     expect(screen.queryByRole("button", { name: "Network monitor" })).toBeNull();
   });
 
+  it("places a keyboard-operable settings control beside the workspace identity block", async () => {
+    const user = await openWorkspace();
+    const sidebar = screen.getByRole("complementary", { name: "Workspace navigation" });
+    const button = within(sidebar).getByRole("button", { name: "Settings" });
+    expect(button.tagName).toBe("BUTTON");
+    // The gear must sit inside the text block that positions it, so it can centre on
+    // the name/subtitle only. The avatar stays a sibling, as the block's top anchor.
+    const text = button.parentElement!;
+    expect(text.classList.contains("identity-text")).toBe(true);
+    expect(text.parentElement!.classList.contains("side-bottom")).toBe(true);
+    expect(text.previousElementSibling!.classList.contains("avatar")).toBe(true);
+    expect(text.textContent).toContain("Test workspace");
+    expect(text.textContent).toContain("Local workspace");
+    button.focus();
+    await user.keyboard("{Enter}");
+    await screen.findByRole("dialog");
+  });
+
+  it("opens the empty settings panel and moves focus into it", async () => {
+    const user = await openWorkspace();
+    const button = screen.getByRole("button", { name: "Settings" });
+    await user.click(button);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(within(dialog).getByText("No settings yet.")).toBeTruthy();
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close settings" }));
+  });
+
+  it("closes the settings panel from its close button and returns focus to the sidebar control", async () => {
+    const user = await openWorkspace();
+    const button = screen.getByRole("button", { name: "Settings" });
+    await user.click(button);
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("closes the settings panel from the backdrop or the Esc key and returns focus to the sidebar control", async () => {
+    const user = await openWorkspace();
+    const button = screen.getByRole("button", { name: "Settings" });
+    await user.click(button);
+    await fireEvent.click(await screen.findByRole("dialog"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await user.click(button);
+    // jsdom has no native dialog, so Esc is dispatched as the `cancel` event it raises.
+    await fireEvent(await screen.findByRole("dialog"), new Event("cancel"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(button);
+  });
+
   it("shows a recoverable loading error rather than pretend browser persistence", async () => {
     vi.mocked(api.load).mockRejectedValueOnce(new Error("Desktop app required."));
     render(Workspace);
