@@ -24,9 +24,13 @@
   import { statuses, type Layout, type RecordInput, type RecordItem, type SavedView, type Workspace } from "$lib/types";
   import RecordEditor from "./RecordEditor.svelte";
   import StatusBadge from "./StatusBadge.svelte";
+  import WorkspaceSetup from "./WorkspaceSetup.svelte";
+  import { accentInk } from "$lib/theme";
 
-  let workspace = $state<Workspace>({ databases: [], views: [], records: [] });
+  let workspace = $state<Workspace>({ settings: null, databases: [], views: [], records: [] });
   let loading = $state(true);
+  let loadFailed = $state(false);
+  let newDatabaseName = $state("");
   let busy = $state(false);
   let error = $state("");
   let announcement = $state("");
@@ -39,6 +43,8 @@
   let recordsElement = $state<HTMLDivElement>();
   let drag = $state<{ recordId: number; startX: number; startY: number; targetId: number | null; after: boolean; moved: boolean } | null>(null);
   let suppressGripClick = false;
+  const accent = $derived(workspace.settings?.accentColor ?? "#b8aaf7");
+  const initials = $derived(workspace.settings?.name.split(/\s+/).slice(0, 2).map((word) => word[0]).join("").toUpperCase() ?? "F");
 
   const database = $derived(workspace.databases.find((item) => item.id === databaseId) ?? workspace.databases[0]);
   const views = $derived(workspace.views.filter((item) => item.databaseId === database?.id));
@@ -51,10 +57,12 @@
   async function load() {
     if (busy) return;
     loading = true;
+    loadFailed = false;
     error = "";
     try {
       workspace = await api.load();
     } catch (cause) {
+      loadFailed = true;
       error = errorMessage(cause);
     } finally {
       loading = false;
@@ -74,6 +82,15 @@
     } finally {
       busy = false;
     }
+  }
+
+  async function setupWorkspace(name: string, accentColor: string) {
+    await mutate(() => api.setup(name, accentColor));
+  }
+
+  async function createDatabase() {
+    if (!newDatabaseName.trim() || busy) return;
+    if (await mutate(() => api.createDatabase(newDatabaseName.trim()))) newDatabaseName = "";
   }
 
   function selectDatabase(id: number) {
@@ -178,7 +195,11 @@
 
 <svelte:head><meta name="description" content="Folio — a calm, local-first database workspace." /></svelte:head>
 
-<div class="shell">
+<div style:--accent={accent} style:--accent-ink={accentInk(accent)}>
+{#if !loading && !loadFailed && !workspace.settings}
+  <WorkspaceSetup {busy} {error} onSubmit={setupWorkspace} />
+{:else}
+<div class="workspace-shell" class:sidebar-open={sidebarOpen}>
   {#if sidebarOpen}
     <aside id="database-sidebar" aria-label="Workspace navigation">
       <div class="brand"><span class="logo">f</span> folio</div>
@@ -191,22 +212,31 @@
           </button>
         {/each}
       </nav>
-      <div class="side-bottom"><span class="avatar">OK</span><div>Oshank’s workspace</div><small>Local workspace</small></div>
+      <div class="side-bottom"><span class="avatar">{initials}</span><div>{workspace.settings?.name ?? "Your workspace"}</div><small>Local workspace</small></div>
     </aside>
   {/if}
 
   <main>
     <header class="chrome">
       <button class="icon-button" aria-label="Toggle database sidebar" aria-expanded={sidebarOpen} aria-controls="database-sidebar" onclick={() => sidebarOpen = !sidebarOpen}><PanelLeft size={16} /></button>
-      <div class="path">Workspace <span>/</span> <span class="current-path">{database?.name ?? "Folio"}</span></div>
+      <div class="path">{workspace.settings?.name ?? "Workspace"} <span>/</span> <span class="current-path">{database?.name ?? "Folio"}</span></div>
       <span class="local-indicator"><span></span> Local only</span>
     </header>
 
     <div class="content">
       {#if loading}
         <div class="load-state" role="status"><Database size={24} /><h1>Opening your workspace…</h1><p>Everything stays on this device.</p></div>
+      {:else if loadFailed}
+        <div class="load-state"><Database size={28} /><h1>Your local workspace</h1><p role="alert">{error}</p><button class="primary" onclick={load}><RefreshCw size={15} /> Try again</button></div>
       {:else if !database}
-        <div class="load-state"><Database size={28} /><h1>Your local workspace</h1><p role="alert">{error || "No databases are available."}</p><button class="primary" onclick={load}><RefreshCw size={15} /> Try again</button></div>
+        <div class="load-state"><Database size={28} /><h1>Welcome to {workspace.settings?.name}</h1><p>Your workspace is ready. Create your first database to start adding records.</p>
+          <form class="database-create" onsubmit={(event) => { event.preventDefault(); void createDatabase(); }}>
+            <label for="database-name">Database name</label>
+            <input id="database-name" bind:value={newDatabaseName} required maxlength="200" disabled={busy} placeholder="e.g. Tasks" />
+            {#if error}<p role="alert">{error}</p>{/if}
+            <button class="primary" disabled={busy || !newDatabaseName.trim()}><Plus size={15} />{busy ? "Creating…" : "Create database"}</button>
+          </form>
+        </div>
       {:else}
         <div class="eyebrow"><Database size={14} /> DATABASE</div>
         <h1>{database.name}</h1>
@@ -303,6 +333,7 @@
     </div>
   </main>
 </div>
+{/if}
 
 <div class="sr-only" role="status" aria-live="polite">{announcement}</div>
 
@@ -311,20 +342,23 @@
     <RecordEditor record={editing} {busy} {error} onSave={saveRecord} onDelete={deleteRecord} onClose={() => { editing = null; error = ""; }} />
   {/key}
 {/if}
+</div>
 
 <style>
-  .shell { display: flex; min-height: 100dvh; }
-  aside { width: 210px; flex-shrink: 0; background: #141518; border-right: 1px solid var(--line); padding: 20px 12px; display: flex; flex-direction: column; }
+  .workspace-shell { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 100vh; min-height: 100dvh; }
+  .workspace-shell.sidebar-open { grid-template-columns: 210px minmax(0, 1fr); }
+  aside { grid-column: 1; grid-row: 1; min-width: 0; background: #141518; border-right: 1px solid var(--line); padding: 20px 12px; display: flex; flex-direction: column; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 26px; font-weight: 600; letter-spacing: -.4px; font-size: 18px; }
-  .logo { background: #b8aaf7; color: #252034; border-radius: 7px; padding: 2px 8px; }
+  .logo { background: var(--accent); color: var(--accent-ink); border-radius: 7px; padding: 2px 8px; }
   .caption { color: var(--sub); font-size: 11px; letter-spacing: 1px; padding: 20px 10px 8px; }
   .db { width: 100%; margin: 2px 0; color: #b7b8c1; }
-  .db.active { background: #292631; color: #e1dafa; }
+  .db.active { background: var(--accent-soft); color: var(--accent-text); }
   .side-bottom { margin-top: auto; color: var(--sub); padding: 28px 10px 0; font-size: 12px; }
-  .side-bottom div { padding-top: 8px; }
+  .side-bottom div { padding-top: 8px; overflow-wrap: anywhere; }
   .side-bottom small { font-size: 11px; color: #737680; }
-  .avatar { background: #34313f; border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; color: #d7cdee; font-size: 11px; }
-  main { flex: 1; min-width: 0; }
+  .avatar { background: var(--accent-soft); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; color: var(--accent-text); font-size: 11px; }
+  main { grid-column: 1; grid-row: 1; min-width: 0; }
+  .sidebar-open > main { grid-column: 2; }
   .chrome { min-height: 56px; border-bottom: 1px solid var(--line); padding: 0 22px; display: flex; align-items: center; gap: 12px; color: var(--sub); font-size: 12px; }
   .path { flex: 1; }
   .path > span:first-child { margin: 0 8px; color: #61636e; }
@@ -337,9 +371,9 @@
   .description { color: var(--sub); margin: 0 0 26px; font-size: 13px; }
   .tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .tabs button { border-radius: 0; padding: 10px 9px; color: var(--sub); border-bottom: 2px solid transparent; }
-  .tabs button.selected { color: #d9d0ff; border-bottom-color: var(--accent); }
+  .tabs button.selected { color: var(--accent-text); border-bottom-color: var(--accent); }
   .toolbar { display: flex; align-items: center; gap: 5px; padding: 16px 0; flex-wrap: wrap; font-size: 12px; }
-  button.on { color: #c8bbff; background: #292535; }
+  button.on { color: var(--accent-text); background: var(--accent-soft); }
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 12px; }
   th { font-weight: 400; color: var(--sub); background: #1c1d21; text-align: left; padding: 10px 12px; border: 1px solid var(--line); }
@@ -349,14 +383,14 @@
   tr:hover td { background: #202126; }
   .name-cell { min-width: 210px; width: 35%; }
   button.record-name { padding: 0; border-radius: 2px; color: #e8e8ec; }
-  button.record-name:hover:not(:disabled) { background: none; color: #d9d0ff; text-decoration: underline; text-underline-offset: 3px; }
+  button.record-name:hover:not(:disabled) { background: none; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
   .muted { color: var(--sub); }
   .grip-cell { width: 34px; padding: 3px 2px !important; border-right: 0; background: #18191c; }
   .row-grip { padding: 6px; color: #81838f; cursor: grab; touch-action: none; }
-  .row-grip:hover:not(:disabled) { color: #d9d0ff; background: #302b3d; }
+  .row-grip:hover:not(:disabled) { color: var(--accent-text); background: var(--accent-soft); }
   .row-grip:active { cursor: grabbing; }
-  tr.drop-before td { box-shadow: inset 0 2px #b8aaf7; }
-  tr.drop-after td { box-shadow: inset 0 -2px #b8aaf7; }
+  tr.drop-before td { box-shadow: inset 0 2px var(--accent); }
+  tr.drop-after td { box-shadow: inset 0 -2px var(--accent); }
   .compact td { padding: 8px 12px; }
   .move-actions { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; color: #bbb5cf; }
   .move-actions > span { margin-right: 6px; }
@@ -375,8 +409,8 @@
   .select-wrap { position: relative; display: inline-flex; }
   .select-wrap :global(svg) { position: absolute; right: 10px; top: 10px; pointer-events: none; color: #aaa6b9; }
   .settings input[type="checkbox"] { appearance: none; flex-shrink: 0; width: 17px; height: 17px; border: 1px solid #555461; border-radius: 4px; background: #292a31; margin: 0; display: grid; place-content: center; cursor: pointer; }
-  .settings input[type="checkbox"]:checked { background: #b8aaf7; border-color: #b8aaf7; }
-  .settings input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid #272135; border-bottom: 2px solid #272135; transform: translateY(-1px) rotate(-45deg); }
+  .settings input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+  .settings input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg); }
   .list-row { display: flex; width: 100%; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); border-radius: 0; padding: 14px 5px; font-size: 13px; }
   .list-row > span { overflow-wrap: anywhere; }
   .empty { padding: 32px 12px; color: var(--sub); font-size: 13px; text-align: center; }
@@ -384,17 +418,22 @@
   .load-state { padding: 80px 16px; max-width: 560px; margin: 0 auto; text-align: center; color: var(--sub); }
   .load-state h1 { font-size: 24px; color: var(--text); }
   .load-state p { font-size: 13px; margin-bottom: 24px; }
+  .database-create { display: flex; flex-direction: column; gap: 12px; max-width: 320px; margin: 0 auto; text-align: left; }
+  .database-create label { font-size: 13px; }
+  .database-create input { background: #202125; border: 1px solid #3b3c44; border-radius: 6px; padding: 10px 12px; }
+  .database-create button { justify-content: center; }
   .error-banner { display: flex; align-items: center; justify-content: space-between; background: #38282c; border: 1px solid #67434b; color: #f1bbc2; padding: 8px 12px; margin-bottom: 16px; border-radius: 6px; font-size: 12px; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   @media (max-width: 700px) {
-    aside { width: 165px; }
+    .workspace-shell.sidebar-open { grid-template-columns: 165px minmax(0, 1fr); }
     .content { padding: 22px 16px; }
     .board { grid-template-columns: 1fr; }
     .chrome { padding: 0 12px; }
     .local-indicator { display: none; }
   }
   @media (max-width: 500px) {
-    .shell { flex-direction: column; }
+    .workspace-shell.sidebar-open { grid-template-columns: minmax(0, 1fr); }
+    .sidebar-open > main { grid-column: 1; grid-row: 2; }
     aside { width: 100%; border-right: 0; border-bottom: 1px solid var(--line); padding: 12px; display: block; }
     .brand { padding-bottom: 8px; }
     .db { width: auto; font-size: 12px; }

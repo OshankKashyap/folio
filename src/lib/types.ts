@@ -35,6 +35,7 @@ export interface RecordItem {
 export type RecordInput = Omit<RecordItem, "databaseId">;
 
 export interface Workspace {
+  settings: { name: string; accentColor: string } | null;
   databases: WorkspaceDatabase[];
   views: SavedView[];
   records: RecordItem[];

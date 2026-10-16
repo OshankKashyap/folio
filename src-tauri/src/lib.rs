@@ -9,6 +9,27 @@ async fn load_workspace(database: State<'_, Database>) -> Result<Workspace, AppE
 }
 
 #[tauri::command]
+async fn setup_workspace(
+    database: State<'_, Database>,
+    name: String,
+    accent_color: String,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| db::setup_workspace(connection, &name, &accent_color))
+        .await
+}
+
+#[tauri::command]
+async fn create_database(
+    database: State<'_, Database>,
+    name: String,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| db::create_database(connection, &name))
+        .await
+}
+
+#[tauri::command]
 async fn create_record(
     database: State<'_, Database>,
     database_id: i64,
@@ -73,6 +94,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             load_workspace,
+            setup_workspace,
+            create_database,
             create_record,
             update_record,
             delete_record,

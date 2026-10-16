@@ -18,6 +18,12 @@ export const api = {
   create(databaseId: number, status: Status): Promise<Workspace> {
     return invoke("create_record", { databaseId, status });
   },
+  setup(name: string, accentColor: string): Promise<Workspace> {
+    return invoke("setup_workspace", { name, accentColor });
+  },
+  createDatabase(name: string): Promise<Workspace> {
+    return invoke("create_database", { name });
+  },
   update(input: RecordInput): Promise<Workspace> {
     return invoke("update_record", { input });
   },

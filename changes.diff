@@ -1,0 +1,916 @@
+diff --git a/.gitignore b/.gitignore
+index 6635cf5..7c183ef 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -8,3 +8,4 @@ node_modules
+ !.env.example
+ vite.config.js.timestamp-*
+ vite.config.ts.timestamp-*
++*.diff
+diff --git a/.stignore b/.stignore
+deleted file mode 100644
+index dbf0821..0000000
+--- a/.stignore
++++ /dev/null
+@@ -1 +0,0 @@
+-node_modules/*
+\ No newline at end of file
+diff --git a/README.md b/README.md
+index dfc8317..de466d8 100644
+--- a/README.md
++++ b/README.md
+@@ -4,7 +4,9 @@ A local-first database workspace built with Tauri 2, Svelte 5, SvelteKit, TypeSc
+ 
+ ## Features
+ 
+-- Retractable sidebar with Projects, Reading list, and Ideas databases
++- First-launch setup for a workspace name and accent color (presets or a custom color)
++- Empty workspace with a first-database creation flow; no sample records
++- Retractable sidebar with workspace identity
+ - Table, status board, and list layouts over the same records
+ - Per-database saved views with persistent layout, In progress filter, alphabetical sort, compact rows, and owner visibility
+ - Create, edit, and delete records with name, status, priority, due date, and owner
+@@ -42,11 +44,13 @@ The database file is `folio.sqlite3` in Tauri’s application data directory. On
+ ~/.local/share/com.oshank.notionalternative/folio.sqlite3
+ ```
+ 
+-`XDG_DATA_HOME` overrides the Linux base directory. Each sidebar database is a logical collection in this single SQLite file. The first launch seeds the three databases, their own saved views, and the handoff’s sample records. Later launches never reseed or overwrite edits. Dates are stored as nullable ISO dates (`YYYY-MM-DD`); timestamps use UTC.
++`XDG_DATA_HOME` overrides the Linux base directory. Each sidebar database is a logical collection in this single SQLite file. On first launch, choose a workspace name and accent color, then create your first empty database. Setup and accent choices persist in SQLite; later launches go straight to the workspace. Dates are stored as nullable ISO dates (`YYYY-MM-DD`); timestamps use UTC.
++
++**Upgrade reset:** schema version 2 intentionally clears all existing databases, saved views, and records from the pre-onboarding app once. The next launch shows setup. This is not repeated after setup. Back up the old database before running this version if you want to retain a copy.
+ 
+ To back up the workspace, close Folio first, then copy the database file. Data is local but not encrypted; device access controls still apply.
+ 
+-Custom properties, creating or deleting databases and saved views, advanced filters, board drag-and-drop, sync, authentication, and import/export are not included in this first implementation.
++Custom properties, additional database management beyond creating the first database, saved-view creation/deletion, advanced filters, board drag-and-drop, sync, authentication, and import/export are not included in this first implementation.
+ 
+ ## Checks and builds
+ 
+diff --git a/changes.diff b/changes.diff
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src-tauri/migrations/001_workspace.sql b/src-tauri/migrations/001_workspace.sql
+index 6364b8f..b0dbb8e 100644
+--- a/src-tauri/migrations/001_workspace.sql
++++ b/src-tauri/migrations/001_workspace.sql
+@@ -34,28 +34,4 @@ CREATE TABLE records (
+ CREATE INDEX records_database_order ON records(database_id, position, id);
+ CREATE INDEX views_database_order ON saved_views(database_id, position, id);
+ 
+-INSERT INTO databases (id, name, description, icon, position) VALUES
+-    (1, 'Projects', 'A little structure for everything you’re building.', 'layers', 0),
+-    (2, 'Reading list', 'Good ideas start with a good book.', 'book', 1),
+-    (3, 'Ideas', 'A home for your next big thing.', 'idea', 2);
+-
+-INSERT INTO saved_views (database_id, name, layout, filter_active, position)
+-SELECT id, CASE WHEN id = 1 THEN 'All projects' WHEN id = 2 THEN 'All books' ELSE 'All ideas' END, 'table', 0, 0 FROM databases;
+-INSERT INTO saved_views (database_id, name, layout, filter_active, position)
+-SELECT id, 'In progress', 'table', 1, 1 FROM databases;
+-INSERT INTO saved_views (database_id, name, layout, position)
+-SELECT id, 'By status', 'board', 2 FROM databases;
+-
+-INSERT INTO records (database_id, name, status, priority, due_date, owner, position) VALUES
+-    (1, 'Network monitor', 'In progress', 'High', '2026-10-20', 'Oshank', 0),
+-    (1, 'Database workspace', 'In progress', 'High', '2026-10-24', 'Oshank', 1),
+-    (1, 'Portfolio refresh', 'To do', 'Medium', '2026-10-28', 'Oshank', 2),
+-    (1, 'API documentation', 'Done', 'Medium', '2026-10-14', 'Oshank', 3),
+-    (1, 'CLI utilities', 'To do', 'Low', '2026-11-02', 'Oshank', 4),
+-    (1, 'Design system', 'In progress', 'Medium', '2026-10-22', 'Oshank', 5),
+-    (2, 'Designing Data-Intensive Applications', 'In progress', 'High', '2026-10-30', 'Oshank', 0),
+-    (2, 'The Pragmatic Programmer', 'To do', 'Medium', '2026-11-05', 'Oshank', 1),
+-    (3, 'Offline-first notes', 'To do', 'High', '2026-10-25', 'Oshank', 0),
+-    (3, 'A calmer task manager', 'In progress', 'Medium', '2026-11-01', 'Oshank', 1);
+-
+ PRAGMA user_version = 1;
+diff --git a/src-tauri/migrations/002_workspace_setup.sql b/src-tauri/migrations/002_workspace_setup.sql
+new file mode 100644
+index 0000000..51e3582
+--- /dev/null
++++ b/src-tauri/migrations/002_workspace_setup.sql
+@@ -0,0 +1,13 @@
++-- One-time reset of the pre-onboarding workspace, including cascading views/records.
++DELETE FROM records;
++DELETE FROM saved_views;
++DELETE FROM databases;
++DELETE FROM sqlite_sequence WHERE name IN ('databases', 'saved_views', 'records');
++
++CREATE TABLE workspace_settings (
++    id INTEGER PRIMARY KEY CHECK (id = 1),
++    name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 100),
++    accent_color TEXT NOT NULL CHECK (length(accent_color) = 7 AND accent_color GLOB '#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]')
++);
++
++PRAGMA user_version = 2;
+diff --git a/src-tauri/src/db.rs b/src-tauri/src/db.rs
+index bfadf1e..3b7c6d1 100644
+--- a/src-tauri/src/db.rs
++++ b/src-tauri/src/db.rs
+@@ -75,7 +75,7 @@ impl Database {
+ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
+     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+-    if version > 1 {
++    if version > 2 {
+         return Err(rusqlite::Error::InvalidParameterName(
+             "This workspace requires a newer version of Folio".into(),
+         ));
+@@ -83,6 +83,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
+     if version == 0 {
+         transaction.execute_batch(include_str!("../migrations/001_workspace.sql"))?;
+     }
++    if version < 2 {
++        transaction.execute_batch(include_str!("../migrations/002_workspace_setup.sql"))?;
++    }
+     transaction.commit()?;
+     Ok(())
+ }
+@@ -132,14 +135,34 @@ pub struct RecordInput {
+     pub owner: String,
+ }
+ 
++#[derive(Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct WorkspaceSettings {
++    name: String,
++    accent_color: String,
++}
++
+ #[derive(Serialize)]
+ pub struct Workspace {
++    settings: Option<WorkspaceSettings>,
+     databases: Vec<WorkspaceDatabase>,
+     pub views: Vec<SavedView>,
+     pub records: Vec<Record>,
+ }
+ 
+ pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
++    let settings = connection
++        .query_row(
++            "SELECT name, accent_color FROM workspace_settings WHERE id = 1",
++            [],
++            |row| {
++                Ok(WorkspaceSettings {
++                    name: row.get(0)?,
++                    accent_color: row.get(1)?,
++                })
++            },
++        )
++        .optional()?;
+     let databases = connection
+         .prepare("SELECT id, name, description, icon FROM databases ORDER BY position, id")?
+         .query_map([], |row| {
+@@ -158,12 +181,66 @@ pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
+         .query_map([], |row| Ok(Record { id: row.get(0)?, database_id: row.get(1)?, name: row.get(2)?, status: row.get(3)?, priority: row.get(4)?, due_date: row.get(5)?, owner: row.get(6)? }))?
+         .collect::<rusqlite::Result<Vec<_>>>()?;
+     Ok(Workspace {
++        settings,
+         databases,
+         views,
+         records,
+     })
+ }
+ 
++pub fn setup_workspace(
++    connection: &mut Connection,
++    name: &str,
++    accent_color: &str,
++) -> Result<Workspace, AppError> {
++    let name = name.trim();
++    if name.is_empty() || name.chars().count() > 100 {
++        return Err(AppError::invalid(
++            "Enter a workspace name (up to 100 characters).",
++        ));
++    }
++    if accent_color.len() != 7
++        || !accent_color.starts_with('#')
++        || !accent_color.as_bytes()[1..]
++            .iter()
++            .all(u8::is_ascii_hexdigit)
++    {
++        return Err(AppError::invalid("Choose a valid accent color."));
++    }
++    let changed = connection.execute(
++        "INSERT INTO workspace_settings (id, name, accent_color) VALUES (1, ?1, ?2) ON CONFLICT(id) DO NOTHING",
++        params![name, accent_color.to_ascii_lowercase()],
++    )?;
++    if changed == 0 {
++        return Err(AppError::invalid(
++            "This workspace is already set up. Reload to continue.",
++        ));
++    }
++    load(connection)
++}
++
++pub fn create_database(connection: &mut Connection, name: &str) -> Result<Workspace, AppError> {
++    let name = name.trim();
++    if name.is_empty() || name.chars().count() > 200 {
++        return Err(AppError::invalid(
++            "Enter a database name (up to 200 characters).",
++        ));
++    }
++    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
++    if !transaction.query_row(
++        "SELECT EXISTS(SELECT 1 FROM workspace_settings)",
++        [],
++        |row| row.get::<_, bool>(0),
++    )? {
++        return Err(AppError::invalid("Set up your workspace first."));
++    }
++    transaction.execute("INSERT INTO databases (name, icon, position) VALUES (?1, 'layers', (SELECT COALESCE(MAX(position), -1) + 1 FROM databases))", [name])?;
++    let id = transaction.last_insert_rowid();
++    transaction.execute("INSERT INTO saved_views (database_id, name, layout, position) VALUES (?1, 'All records', 'table', 0)", [id])?;
++    transaction.commit()?;
++    load(connection)
++}
++
+ fn validate_status(status: &str) -> Result<(), AppError> {
+     if !["To do", "In progress", "Done"].contains(&status) {
+         return Err(AppError::invalid("Choose a valid status."));
+@@ -277,6 +354,7 @@ mod tests {
+         let mut db = Connection::open_in_memory().unwrap();
+         db.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+         migrate(&mut db).unwrap();
++        db.execute_batch(include_str!("test_seed.sql")).unwrap();
+         db
+     }
+ 
+@@ -308,12 +386,12 @@ mod tests {
+             .pragma_query_value(None, "user_version", |row| row.get(0))
+             .unwrap();
+         assert_eq!(version, 0);
+-        db.pragma_update(None, "user_version", 2).unwrap();
++        db.pragma_update(None, "user_version", 3).unwrap();
+         assert!(migrate(&mut db).is_err());
+         let version: i64 = db
+             .pragma_query_value(None, "user_version", |row| row.get(0))
+             .unwrap();
+-        assert_eq!(version, 2);
++        assert_eq!(version, 3);
+     }
+ 
+     #[test]
+@@ -436,11 +514,14 @@ mod tests {
+ 
+     #[test]
+     fn data_and_settings_survive_reopening_the_file() {
+-        let path = std::env::temp_dir().join(format!("folio-test-{}.sqlite", std::process::id()));
++        let path =
++            std::env::temp_dir().join(format!("folio-setup-test-{}.sqlite", std::process::id()));
+         {
+             let mut db = Connection::open(&path).unwrap();
+             migrate(&mut db).unwrap();
+-            create_record(&mut db, 3, "Done").unwrap();
++            setup_workspace(&mut db, "My workspace", "#91baff").unwrap();
++            let workspace = create_database(&mut db, "Tasks").unwrap();
++            create_record(&mut db, workspace.databases[0].id, "Done").unwrap();
+             let mut view = load(&mut db).unwrap().views.remove(0);
+             view.show_owner = false;
+             update_view(&mut db, view).unwrap();
+@@ -448,9 +529,64 @@ mod tests {
+         let mut db = Connection::open(&path).unwrap();
+         migrate(&mut db).unwrap();
+         let workspace = load(&mut db).unwrap();
+-        assert_eq!(workspace.records.len(), 11);
++        assert_eq!(workspace.records.len(), 1);
++        let settings = workspace.settings.unwrap();
++        assert_eq!(settings.name, "My workspace");
++        assert_eq!(settings.accent_color, "#91baff");
+         assert!(!workspace.views[0].show_owner);
+         drop(db);
+         std::fs::remove_file(path).unwrap();
+     }
++
++    #[test]
++    fn fresh_install_is_empty_and_setup_is_validated() {
++        let mut db = Connection::open_in_memory().unwrap();
++        migrate(&mut db).unwrap();
++        let workspace = load(&mut db).unwrap();
++        assert!(workspace.settings.is_none());
++        assert!(workspace.databases.is_empty());
++        assert!(workspace.views.is_empty());
++        assert!(workspace.records.is_empty());
++        assert!(create_database(&mut db, "Tasks").is_err());
++        for name in ["", "   ", &"x".repeat(101)] {
++            assert!(setup_workspace(&mut db, name, "#b8aaf7").is_err());
++        }
++        for color in ["red", "#fff", "#zzzzzz", "#1234567", "#12345é"] {
++            assert!(setup_workspace(&mut db, "Home", color).is_err());
++        }
++        assert!(load(&mut db).unwrap().settings.is_none());
++        let workspace = setup_workspace(&mut db, " Home ", "#B8AAF7").unwrap();
++        let settings = workspace.settings.unwrap();
++        assert_eq!(settings.name, "Home");
++        assert_eq!(settings.accent_color, "#b8aaf7");
++        assert!(workspace.databases.is_empty());
++        assert!(setup_workspace(&mut db, "Overwrite", "#000000").is_err());
++        assert!(create_database(&mut db, "  ").is_err());
++        assert!(create_database(&mut db, &"x".repeat(201)).is_err());
++        let workspace = create_database(&mut db, " Tasks ").unwrap();
++        assert_eq!(workspace.databases[0].name, "Tasks");
++        assert_eq!(workspace.views.len(), 1);
++        assert!(workspace.records.is_empty());
++    }
++
++    #[test]
++    fn legacy_workspace_is_cleared_once() {
++        let mut db = Connection::open_in_memory().unwrap();
++        db.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
++        db.execute_batch(include_str!("../migrations/001_workspace.sql"))
++            .unwrap();
++        db.execute_batch(include_str!("test_seed.sql")).unwrap();
++        migrate(&mut db).unwrap();
++        let workspace = load(&mut db).unwrap();
++        assert!(workspace.settings.is_none());
++        assert!(workspace.databases.is_empty());
++        assert!(workspace.views.is_empty());
++        assert!(workspace.records.is_empty());
++        setup_workspace(&mut db, "Fresh start", "#8bd5b5").unwrap();
++        create_database(&mut db, "Keep me").unwrap();
++        migrate(&mut db).unwrap();
++        let workspace = load(&mut db).unwrap();
++        assert_eq!(workspace.settings.unwrap().name, "Fresh start");
++        assert_eq!(workspace.databases[0].name, "Keep me");
++    }
+ }
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 672e99c..3b93e83 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -8,6 +8,27 @@ async fn load_workspace(database: State<'_, Database>) -> Result<Workspace, AppE
+     database.run(db::load).await
+ }
+ 
++#[tauri::command]
++async fn setup_workspace(
++    database: State<'_, Database>,
++    name: String,
++    accent_color: String,
++) -> Result<Workspace, AppError> {
++    database
++        .run(move |connection| db::setup_workspace(connection, &name, &accent_color))
++        .await
++}
++
++#[tauri::command]
++async fn create_database(
++    database: State<'_, Database>,
++    name: String,
++) -> Result<Workspace, AppError> {
++    database
++        .run(move |connection| db::create_database(connection, &name))
++        .await
++}
++
+ #[tauri::command]
+ async fn create_record(
+     database: State<'_, Database>,
+@@ -73,6 +94,8 @@ pub fn run() {
+         })
+         .invoke_handler(tauri::generate_handler![
+             load_workspace,
++            setup_workspace,
++            create_database,
+             create_record,
+             update_record,
+             delete_record,
+diff --git a/src-tauri/src/test_seed.sql b/src-tauri/src/test_seed.sql
+new file mode 100644
+index 0000000..a68b89a
+--- /dev/null
++++ b/src-tauri/src/test_seed.sql
+@@ -0,0 +1,24 @@
++-- Test-only data. Never loaded by the application.
++INSERT INTO databases (id, name, description, icon, position) VALUES
++    (1, 'Projects', 'A little structure for everything you’re building.', 'layers', 0),
++    (2, 'Reading list', 'Good ideas start with a good book.', 'book', 1),
++    (3, 'Ideas', 'A home for your next big thing.', 'idea', 2);
++
++INSERT INTO saved_views (database_id, name, layout, filter_active, position)
++SELECT id, 'All records', 'table', 0, 0 FROM databases;
++INSERT INTO saved_views (database_id, name, layout, filter_active, position)
++SELECT id, 'In progress', 'table', 1, 1 FROM databases;
++INSERT INTO saved_views (database_id, name, layout, position)
++SELECT id, 'By status', 'board', 2 FROM databases;
++
++INSERT INTO records (database_id, name, status, priority, due_date, owner, position) VALUES
++    (1, 'Network monitor', 'In progress', 'High', '2026-10-20', 'Oshank', 0),
++    (1, 'Database workspace', 'In progress', 'High', '2026-10-24', 'Oshank', 1),
++    (1, 'Portfolio refresh', 'To do', 'Medium', '2026-10-28', 'Oshank', 2),
++    (1, 'API documentation', 'Done', 'Medium', '2026-10-14', 'Oshank', 3),
++    (1, 'CLI utilities', 'To do', 'Low', '2026-11-02', 'Oshank', 4),
++    (1, 'Design system', 'In progress', 'Medium', '2026-10-22', 'Oshank', 5),
++    (2, 'Designing Data-Intensive Applications', 'In progress', 'High', '2026-10-30', 'Oshank', 0),
++    (2, 'The Pragmatic Programmer', 'To do', 'Medium', '2026-11-05', 'Oshank', 1),
++    (3, 'Offline-first notes', 'To do', 'High', '2026-10-25', 'Oshank', 0),
++    (3, 'A calmer task manager', 'In progress', 'Medium', '2026-11-01', 'Oshank', 1);
+diff --git a/src/lib/api.ts b/src/lib/api.ts
+index dd7d9c3..6666e57 100644
+--- a/src/lib/api.ts
++++ b/src/lib/api.ts
+@@ -18,6 +18,12 @@ export const api = {
+   create(databaseId: number, status: Status): Promise<Workspace> {
+     return invoke("create_record", { databaseId, status });
+   },
++  setup(name: string, accentColor: string): Promise<Workspace> {
++    return invoke("setup_workspace", { name, accentColor });
++  },
++  createDatabase(name: string): Promise<Workspace> {
++    return invoke("create_database", { name });
++  },
+   update(input: RecordInput): Promise<Workspace> {
+     return invoke("update_record", { input });
+   },
+diff --git a/src/lib/components/Workspace.svelte b/src/lib/components/Workspace.svelte
+index 017abd3..45f6f33 100644
+--- a/src/lib/components/Workspace.svelte
++++ b/src/lib/components/Workspace.svelte
+@@ -24,9 +24,13 @@
+   import { statuses, type Layout, type RecordInput, type RecordItem, type SavedView, type Workspace } from "$lib/types";
+   import RecordEditor from "./RecordEditor.svelte";
+   import StatusBadge from "./StatusBadge.svelte";
++  import WorkspaceSetup from "./WorkspaceSetup.svelte";
++  import { accentInk } from "$lib/theme";
+ 
+-  let workspace = $state<Workspace>({ databases: [], views: [], records: [] });
++  let workspace = $state<Workspace>({ settings: null, databases: [], views: [], records: [] });
+   let loading = $state(true);
++  let loadFailed = $state(false);
++  let newDatabaseName = $state("");
+   let busy = $state(false);
+   let error = $state("");
+   let announcement = $state("");
+@@ -39,6 +43,8 @@
+   let recordsElement = $state<HTMLDivElement>();
+   let drag = $state<{ recordId: number; startX: number; startY: number; targetId: number | null; after: boolean; moved: boolean } | null>(null);
+   let suppressGripClick = false;
++  const accent = $derived(workspace.settings?.accentColor ?? "#b8aaf7");
++  const initials = $derived(workspace.settings?.name.split(/\s+/).slice(0, 2).map((word) => word[0]).join("").toUpperCase() ?? "F");
+ 
+   const database = $derived(workspace.databases.find((item) => item.id === databaseId) ?? workspace.databases[0]);
+   const views = $derived(workspace.views.filter((item) => item.databaseId === database?.id));
+@@ -51,10 +57,12 @@
+   async function load() {
+     if (busy) return;
+     loading = true;
++    loadFailed = false;
+     error = "";
+     try {
+       workspace = await api.load();
+     } catch (cause) {
++      loadFailed = true;
+       error = errorMessage(cause);
+     } finally {
+       loading = false;
+@@ -76,6 +84,15 @@
+     }
+   }
+ 
++  async function setupWorkspace(name: string, accentColor: string) {
++    await mutate(() => api.setup(name, accentColor));
++  }
++
++  async function createDatabase() {
++    if (!newDatabaseName.trim() || busy) return;
++    if (await mutate(() => api.createDatabase(newDatabaseName.trim()))) newDatabaseName = "";
++  }
++
+   function selectDatabase(id: number) {
+     databaseId = id;
+     selectedRow = null;
+@@ -178,7 +195,11 @@
+ 
+ <svelte:head><meta name="description" content="Folio — a calm, local-first database workspace." /></svelte:head>
+ 
+-<div class="shell">
++<div style:--accent={accent} style:--accent-ink={accentInk(accent)}>
++{#if !loading && !loadFailed && !workspace.settings}
++  <WorkspaceSetup {busy} {error} onSubmit={setupWorkspace} />
++{:else}
++<div class="workspace-shell" class:sidebar-open={sidebarOpen}>
+   {#if sidebarOpen}
+     <aside id="database-sidebar" aria-label="Workspace navigation">
+       <div class="brand"><span class="logo">f</span> folio</div>
+@@ -191,22 +212,31 @@
+           </button>
+         {/each}
+       </nav>
+-      <div class="side-bottom"><span class="avatar">OK</span><div>Oshank’s workspace</div><small>Local workspace</small></div>
++      <div class="side-bottom"><span class="avatar">{initials}</span><div>{workspace.settings?.name ?? "Your workspace"}</div><small>Local workspace</small></div>
+     </aside>
+   {/if}
+ 
+   <main>
+     <header class="chrome">
+       <button class="icon-button" aria-label="Toggle database sidebar" aria-expanded={sidebarOpen} aria-controls="database-sidebar" onclick={() => sidebarOpen = !sidebarOpen}><PanelLeft size={16} /></button>
+-      <div class="path">Workspace <span>/</span> <span class="current-path">{database?.name ?? "Folio"}</span></div>
++      <div class="path">{workspace.settings?.name ?? "Workspace"} <span>/</span> <span class="current-path">{database?.name ?? "Folio"}</span></div>
+       <span class="local-indicator"><span></span> Local only</span>
+     </header>
+ 
+     <div class="content">
+       {#if loading}
+         <div class="load-state" role="status"><Database size={24} /><h1>Opening your workspace…</h1><p>Everything stays on this device.</p></div>
++      {:else if loadFailed}
++        <div class="load-state"><Database size={28} /><h1>Your local workspace</h1><p role="alert">{error}</p><button class="primary" onclick={load}><RefreshCw size={15} /> Try again</button></div>
+       {:else if !database}
+-        <div class="load-state"><Database size={28} /><h1>Your local workspace</h1><p role="alert">{error || "No databases are available."}</p><button class="primary" onclick={load}><RefreshCw size={15} /> Try again</button></div>
++        <div class="load-state"><Database size={28} /><h1>Welcome to {workspace.settings?.name}</h1><p>Your workspace is ready. Create your first database to start adding records.</p>
++          <form class="database-create" onsubmit={(event) => { event.preventDefault(); void createDatabase(); }}>
++            <label for="database-name">Database name</label>
++            <input id="database-name" bind:value={newDatabaseName} required maxlength="200" disabled={busy} placeholder="e.g. Tasks" />
++            {#if error}<p role="alert">{error}</p>{/if}
++            <button class="primary" disabled={busy || !newDatabaseName.trim()}><Plus size={15} />{busy ? "Creating…" : "Create database"}</button>
++          </form>
++        </div>
+       {:else}
+         <div class="eyebrow"><Database size={14} /> DATABASE</div>
+         <h1>{database.name}</h1>
+@@ -303,6 +333,7 @@
+     </div>
+   </main>
+ </div>
++{/if}
+ 
+ <div class="sr-only" role="status" aria-live="polite">{announcement}</div>
+ 
+@@ -311,20 +342,23 @@
+     <RecordEditor record={editing} {busy} {error} onSave={saveRecord} onDelete={deleteRecord} onClose={() => { editing = null; error = ""; }} />
+   {/key}
+ {/if}
++</div>
+ 
+ <style>
+-  .shell { display: flex; min-height: 100dvh; }
+-  aside { width: 210px; flex-shrink: 0; background: #141518; border-right: 1px solid var(--line); padding: 20px 12px; display: flex; flex-direction: column; }
++  .workspace-shell { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 100vh; min-height: 100dvh; }
++  .workspace-shell.sidebar-open { grid-template-columns: 210px minmax(0, 1fr); }
++  aside { grid-column: 1; grid-row: 1; min-width: 0; background: #141518; border-right: 1px solid var(--line); padding: 20px 12px; display: flex; flex-direction: column; }
+   .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 26px; font-weight: 600; letter-spacing: -.4px; font-size: 18px; }
+-  .logo { background: #b8aaf7; color: #252034; border-radius: 7px; padding: 2px 8px; }
++  .logo { background: var(--accent); color: var(--accent-ink); border-radius: 7px; padding: 2px 8px; }
+   .caption { color: var(--sub); font-size: 11px; letter-spacing: 1px; padding: 20px 10px 8px; }
+   .db { width: 100%; margin: 2px 0; color: #b7b8c1; }
+-  .db.active { background: #292631; color: #e1dafa; }
++  .db.active { background: var(--accent-soft); color: var(--accent-text); }
+   .side-bottom { margin-top: auto; color: var(--sub); padding: 28px 10px 0; font-size: 12px; }
+-  .side-bottom div { padding-top: 8px; }
++  .side-bottom div { padding-top: 8px; overflow-wrap: anywhere; }
+   .side-bottom small { font-size: 11px; color: #737680; }
+-  .avatar { background: #34313f; border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; color: #d7cdee; font-size: 11px; }
+-  main { flex: 1; min-width: 0; }
++  .avatar { background: var(--accent-soft); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; color: var(--accent-text); font-size: 11px; }
++  main { grid-column: 1; grid-row: 1; min-width: 0; }
++  .sidebar-open > main { grid-column: 2; }
+   .chrome { min-height: 56px; border-bottom: 1px solid var(--line); padding: 0 22px; display: flex; align-items: center; gap: 12px; color: var(--sub); font-size: 12px; }
+   .path { flex: 1; }
+   .path > span:first-child { margin: 0 8px; color: #61636e; }
+@@ -337,9 +371,9 @@
+   .description { color: var(--sub); margin: 0 0 26px; font-size: 13px; }
+   .tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+   .tabs button { border-radius: 0; padding: 10px 9px; color: var(--sub); border-bottom: 2px solid transparent; }
+-  .tabs button.selected { color: #d9d0ff; border-bottom-color: var(--accent); }
++  .tabs button.selected { color: var(--accent-text); border-bottom-color: var(--accent); }
+   .toolbar { display: flex; align-items: center; gap: 5px; padding: 16px 0; flex-wrap: wrap; font-size: 12px; }
+-  button.on { color: #c8bbff; background: #292535; }
++  button.on { color: var(--accent-text); background: var(--accent-soft); }
+   .table-wrap { overflow-x: auto; }
+   table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 12px; }
+   th { font-weight: 400; color: var(--sub); background: #1c1d21; text-align: left; padding: 10px 12px; border: 1px solid var(--line); }
+@@ -349,14 +383,14 @@
+   tr:hover td { background: #202126; }
+   .name-cell { min-width: 210px; width: 35%; }
+   button.record-name { padding: 0; border-radius: 2px; color: #e8e8ec; }
+-  button.record-name:hover:not(:disabled) { background: none; color: #d9d0ff; text-decoration: underline; text-underline-offset: 3px; }
++  button.record-name:hover:not(:disabled) { background: none; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+   .muted { color: var(--sub); }
+   .grip-cell { width: 34px; padding: 3px 2px !important; border-right: 0; background: #18191c; }
+   .row-grip { padding: 6px; color: #81838f; cursor: grab; touch-action: none; }
+-  .row-grip:hover:not(:disabled) { color: #d9d0ff; background: #302b3d; }
++  .row-grip:hover:not(:disabled) { color: var(--accent-text); background: var(--accent-soft); }
+   .row-grip:active { cursor: grabbing; }
+-  tr.drop-before td { box-shadow: inset 0 2px #b8aaf7; }
+-  tr.drop-after td { box-shadow: inset 0 -2px #b8aaf7; }
++  tr.drop-before td { box-shadow: inset 0 2px var(--accent); }
++  tr.drop-after td { box-shadow: inset 0 -2px var(--accent); }
+   .compact td { padding: 8px 12px; }
+   .move-actions { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; color: #bbb5cf; }
+   .move-actions > span { margin-right: 6px; }
+@@ -375,8 +409,8 @@
+   .select-wrap { position: relative; display: inline-flex; }
+   .select-wrap :global(svg) { position: absolute; right: 10px; top: 10px; pointer-events: none; color: #aaa6b9; }
+   .settings input[type="checkbox"] { appearance: none; flex-shrink: 0; width: 17px; height: 17px; border: 1px solid #555461; border-radius: 4px; background: #292a31; margin: 0; display: grid; place-content: center; cursor: pointer; }
+-  .settings input[type="checkbox"]:checked { background: #b8aaf7; border-color: #b8aaf7; }
+-  .settings input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid #272135; border-bottom: 2px solid #272135; transform: translateY(-1px) rotate(-45deg); }
++  .settings input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
++  .settings input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg); }
+   .list-row { display: flex; width: 100%; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); border-radius: 0; padding: 14px 5px; font-size: 13px; }
+   .list-row > span { overflow-wrap: anywhere; }
+   .empty { padding: 32px 12px; color: var(--sub); font-size: 13px; text-align: center; }
+@@ -384,17 +418,22 @@
+   .load-state { padding: 80px 16px; max-width: 560px; margin: 0 auto; text-align: center; color: var(--sub); }
+   .load-state h1 { font-size: 24px; color: var(--text); }
+   .load-state p { font-size: 13px; margin-bottom: 24px; }
++  .database-create { display: flex; flex-direction: column; gap: 12px; max-width: 320px; margin: 0 auto; text-align: left; }
++  .database-create label { font-size: 13px; }
++  .database-create input { background: #202125; border: 1px solid #3b3c44; border-radius: 6px; padding: 10px 12px; }
++  .database-create button { justify-content: center; }
+   .error-banner { display: flex; align-items: center; justify-content: space-between; background: #38282c; border: 1px solid #67434b; color: #f1bbc2; padding: 8px 12px; margin-bottom: 16px; border-radius: 6px; font-size: 12px; }
+   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+   @media (max-width: 700px) {
+-    aside { width: 165px; }
++    .workspace-shell.sidebar-open { grid-template-columns: 165px minmax(0, 1fr); }
+     .content { padding: 22px 16px; }
+     .board { grid-template-columns: 1fr; }
+     .chrome { padding: 0 12px; }
+     .local-indicator { display: none; }
+   }
+   @media (max-width: 500px) {
+-    .shell { flex-direction: column; }
++    .workspace-shell.sidebar-open { grid-template-columns: minmax(0, 1fr); }
++    .sidebar-open > main { grid-column: 1; grid-row: 2; }
+     aside { width: 100%; border-right: 0; border-bottom: 1px solid var(--line); padding: 12px; display: block; }
+     .brand { padding-bottom: 8px; }
+     .db { width: auto; font-size: 12px; }
+diff --git a/src/lib/components/Workspace.test.ts b/src/lib/components/Workspace.test.ts
+index 8674ac9..062ee51 100644
+--- a/src/lib/components/Workspace.test.ts
++++ b/src/lib/components/Workspace.test.ts
+@@ -8,7 +8,7 @@ import Workspace from "./Workspace.svelte";
+ 
+ vi.mock("$lib/api", async (importOriginal) => {
+   const original = await importOriginal<typeof import("$lib/api")>();
+-  return { ...original, api: { load: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn() } };
++  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn() } };
+ });
+ 
+ let data: WorkspaceData;
+@@ -31,6 +31,95 @@ async function openWorkspace() {
+ }
+ 
+ describe("Folio workspace", () => {
++  it("keeps navigation and main content in the same layout container when toggling the sidebar", async () => {
++    const user = await openWorkspace();
++    const main = screen.getByRole("main");
++    const shell = main.parentElement!;
++    const sidebar = screen.getByRole("complementary", { name: "Workspace navigation" });
++    expect(sidebar.parentElement).toBe(shell);
++    expect(shell.classList.contains("sidebar-open")).toBe(true);
++    await user.click(screen.getByRole("button", { name: "Toggle database sidebar" }));
++    expect(screen.queryByRole("complementary")).toBeNull();
++    expect(shell.classList.contains("sidebar-open")).toBe(false);
++    expect(main.parentElement).toBe(shell);
++    await user.click(screen.getByRole("button", { name: "Toggle database sidebar" }));
++    expect(screen.getByRole("complementary").parentElement).toBe(shell);
++    expect(shell.classList.contains("sidebar-open")).toBe(true);
++  });
++
++  it.each([["Teal", "#5ecfca"], ["Amber", "#f5cd6f"]])("saves the %s accent preset", async (label, accentColor) => {
++    data = { settings: null, databases: [], views: [], records: [] };
++    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor } });
++    const user = userEvent.setup();
++    render(Workspace);
++    await user.type(await screen.findByLabelText("Workspace name"), "Home");
++    await user.click(screen.getByRole("radio", { name: label }));
++    await user.click(screen.getByRole("button", { name: "Create workspace" }));
++    await screen.findByRole("heading", { name: "Welcome to Home" });
++    expect(api.setup).toHaveBeenCalledWith("Home", accentColor);
++  });
++
++  it("sets up an empty workspace and creates its first database without sample records", async () => {
++    data = { settings: null, databases: [], views: [], records: [] };
++    vi.mocked(api.setup).mockImplementation(async (name, accentColor) => {
++      data.settings = { name, accentColor };
++      return structuredClone(data);
++    });
++    vi.mocked(api.createDatabase).mockImplementation(async (name) => {
++      data.databases.push({ id: 1, name, description: "", icon: "layers" });
++      data.views.push({ id: 1, databaseId: 1, name: "All records", layout: "table", filterActive: false, sortActive: false, compact: false, showOwner: true });
++      return structuredClone(data);
++    });
++    const user = userEvent.setup();
++    const mounted = render(Workspace);
++    await screen.findByRole("heading", { name: "A little space, all yours." });
++    expect((screen.getByRole("button", { name: "Create workspace" }) as HTMLButtonElement).disabled).toBe(true);
++    await user.type(screen.getByLabelText("Workspace name"), "  My studio  ");
++    await user.click(screen.getByRole("radio", { name: "Mint" }));
++    await user.click(screen.getByRole("button", { name: "Create workspace" }));
++    await screen.findByRole("heading", { name: "Welcome to My studio" });
++    expect(api.setup).toHaveBeenCalledWith("My studio", "#8bd5b5");
++    expect(screen.queryByRole("button", { name: "Projects" })).toBeNull();
++    await user.type(screen.getByLabelText("Database name"), "Tasks");
++    await user.click(screen.getByRole("button", { name: "Create database" }));
++    await screen.findByRole("heading", { name: "Tasks" });
++    expect(screen.getAllByRole("row")).toHaveLength(1);
++    expect(screen.getByText("0 records")).toBeTruthy();
++    expect(mounted.container.firstElementChild?.getAttribute("style")).toContain("--accent: #8bd5b5");
++    mounted.unmount();
++    render(Workspace);
++    await screen.findByRole("heading", { name: "Tasks" });
++    expect(screen.queryByLabelText("Workspace name")).toBeNull();
++  });
++
++  it("keeps setup inputs on save failure and retries with a custom color", async () => {
++    data = { settings: null, databases: [], views: [], records: [] };
++    vi.mocked(api.setup).mockRejectedValueOnce({ message: "Could not save workspace." });
++    const user = userEvent.setup();
++    render(Workspace);
++    const name = await screen.findByLabelText("Workspace name");
++    await user.type(name, "Home");
++    await fireEvent.input(screen.getByLabelText("Custom accent color"), { target: { value: "#123456" } });
++    await user.click(screen.getByRole("button", { name: "Create workspace" }));
++    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save workspace.");
++    expect(name).toHaveProperty("value", "Home");
++    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456" } });
++    await user.click(screen.getByRole("button", { name: "Create workspace" }));
++    await screen.findByRole("heading", { name: "Welcome to Home" });
++    expect(api.setup).toHaveBeenLastCalledWith("Home", "#123456");
++  });
++
++  it("shows database creation errors without leaving the empty workspace", async () => {
++    data = { settings: { name: "Home", accentColor: "#b8aaf7" }, databases: [], views: [], records: [] };
++    vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
++    const user = userEvent.setup();
++    render(Workspace);
++    await user.type(await screen.findByLabelText("Database name"), "Tasks");
++    await user.click(screen.getByRole("button", { name: "Create database" }));
++    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not create database.");
++    expect(screen.getByLabelText("Database name")).toHaveProperty("value", "Tasks");
++  });
++
+   it("loads records and switches databases and saved views", async () => {
+     const user = await openWorkspace();
+     expect(screen.getAllByRole("row")).toHaveLength(7);
+diff --git a/src/lib/components/WorkspaceSetup.svelte b/src/lib/components/WorkspaceSetup.svelte
+new file mode 100644
+index 0000000..ce17c16
+--- /dev/null
++++ b/src/lib/components/WorkspaceSetup.svelte
+@@ -0,0 +1,74 @@
++<script lang="ts">
++  import { accentInk } from "$lib/theme";
++
++  let { busy, error, onSubmit }: {
++    busy: boolean;
++    error: string;
++    onSubmit: (name: string, accentColor: string) => Promise<void>;
++  } = $props();
++
++  let name = $state("");
++  let accent = $state("#b8aaf7");
++  const colors = [
++    { name: "Lavender", value: "#b8aaf7" },
++    { name: "Blue", value: "#91baff" },
++    { name: "Mint", value: "#8bd5b5" },
++    { name: "Peach", value: "#f4b68a" },
++    { name: "Rose", value: "#eea5bd" },
++    { name: "Teal", value: "#5ecfca" },
++    { name: "Amber", value: "#f5cd6f" },
++  ];
++</script>
++
++<main class="setup" style:--accent={accent} style:--accent-ink={accentInk(accent)}>
++  <form onsubmit={(event) => { event.preventDefault(); if (name.trim() && !busy) void onSubmit(name.trim(), accent); }}>
++    <span class="wordmark"><span>f</span> folio</span>
++    <p class="eyebrow">MAKE YOURSELF AT HOME</p>
++    <h1>A little space, all yours.</h1>
++    <p class="intro">Give your workspace a name and a color. Start fresh, with everything saved on this device.</p>
++    <label class="name-label" for="workspace-name">Workspace name</label>
++    <input id="workspace-name" name="workspaceName" bind:value={name} placeholder="e.g. My workspace" required maxlength="100" disabled={busy} autocomplete="organization" />
++    <fieldset disabled={busy}>
++      <legend>Accent color</legend>
++      <p class="hint">For buttons, selections, and focus highlights.</p>
++      <div class="swatches">
++        {#each colors as color}
++          <label class="swatch" style:--swatch={color.value} title={color.name}>
++            <input type="radio" name="accent" value={color.value} bind:group={accent} aria-label={color.name} />
++          </label>
++        {/each}
++      </div>
++      <label class="custom">Custom color <input type="color" bind:value={accent} aria-label="Custom accent color" /><span>{accent.toUpperCase()}</span></label>
++    </fieldset>
++    {#if error}<p class="setup-error" role="alert">{error}</p>{/if}
++    <button class="primary" type="submit" disabled={busy || !name.trim()}>{busy ? "Creating workspace…" : "Create workspace"}</button>
++    <p class="privacy">Local only. No account, no cloud, no sample data.</p>
++  </form>
++</main>
++
++<style>
++  .setup { min-height: 100dvh; display: grid; place-items: center; padding: 40px 24px; }
++  form { width: 100%; max-width: 420px; }
++  .wordmark { display: inline-flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 600; }
++  .wordmark > span { background: var(--accent); color: var(--accent-ink); border-radius: 7px; padding: 0 9px; }
++  .eyebrow { color: var(--sub); font-size: 11px; letter-spacing: 1.4px; margin: 44px 0 8px; }
++  h1 { font-size: 28px; letter-spacing: -.8px; font-weight: 600; margin: 0 0 12px; }
++  .intro { color: var(--sub); margin-bottom: 30px; }
++  .name-label, legend { font-size: 13px; font-weight: 500; }
++  .name-label { display: block; margin-bottom: 8px; }
++  #workspace-name { width: 100%; background: #202125; border: 1px solid #3b3c44; border-radius: 6px; padding: 10px 12px; }
++  fieldset { border: 0; margin: 26px 0; padding: 0; }
++  .hint, .privacy { color: var(--sub); font-size: 12px; }
++  .hint { margin: 6px 0 16px; }
++  .swatches { display: flex; flex-wrap: wrap; gap: 15px; }
++  .swatch { display: grid; place-items: center; width: 34px; height: 34px; }
++  /* Paint the input itself: native WebKit radios can cover a swatch placed behind them. */
++  .swatch input { -webkit-appearance: none; appearance: none; display: block; width: 34px; height: 34px; margin: 0; padding: 0; border: 4px solid #18191c; border-radius: 50%; background: var(--swatch); cursor: pointer; }
++  .swatch input:checked { box-shadow: 0 0 0 2px var(--swatch); }
++  .swatch input:focus-visible { outline: 2px solid var(--text); outline-offset: 5px; }
++  .custom { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--sub); margin-top: 18px; }
++  .custom input { width: 32px; height: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 5px; background: #202125; cursor: pointer; }
++  button.primary { width: 100%; justify-content: center; padding: 11px; }
++  .privacy { text-align: center; margin-top: 18px; }
++  .setup-error { color: #f1bbc2; font-size: 13px; }
++</style>
+diff --git a/src/lib/test-fixture.ts b/src/lib/test-fixture.ts
+index bdd293f..7d1e7c0 100644
+--- a/src/lib/test-fixture.ts
++++ b/src/lib/test-fixture.ts
+@@ -2,6 +2,7 @@ import type { Workspace } from "./types";
+ 
+ export function fixture(): Workspace {
+   return {
++    settings: { name: "Test workspace", accentColor: "#b8aaf7" },
+     databases: [
+       { id: 1, name: "Projects", description: "A little structure for everything you’re building.", icon: "layers" },
+       { id: 2, name: "Reading list", description: "Good ideas start with a good book.", icon: "book" },
+diff --git a/src/lib/theme.test.ts b/src/lib/theme.test.ts
+new file mode 100644
+index 0000000..22f1dac
+--- /dev/null
++++ b/src/lib/theme.test.ts
+@@ -0,0 +1,14 @@
++import { describe, expect, it } from "vitest";
++import { accentInk } from "./theme";
++
++describe("accent contrast", () => {
++  it("uses dark text for light accents", () => {
++    for (const color of ["#ffffff", "#b8aaf7", "#91baff", "#8bd5b5", "#f4b68a", "#eea5bd", "#5ecfca", "#f5cd6f"]) {
++      expect(accentInk(color)).toBe("#000000");
++    }
++  });
++  it("uses white text for dark custom accents", () => {
++    expect(accentInk("#000000")).toBe("#ffffff");
++    expect(accentInk("#123456")).toBe("#ffffff");
++  });
++});
+diff --git a/src/lib/theme.ts b/src/lib/theme.ts
+new file mode 100644
+index 0000000..acc70bc
+--- /dev/null
++++ b/src/lib/theme.ts
+@@ -0,0 +1,9 @@
++// Pick the higher-contrast foreground for filled accent controls, including custom colors.
++export function accentInk(color: string): string {
++  const channels = [1, 3, 5].map((offset) => {
++    const value = parseInt(color.slice(offset, offset + 2), 16) / 255;
++    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
++  });
++  const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
++  return luminance > 0.179 ? "#000000" : "#ffffff";
++}
+diff --git a/src/lib/types.ts b/src/lib/types.ts
+index 7a6c7bc..4a39d69 100644
+--- a/src/lib/types.ts
++++ b/src/lib/types.ts
+@@ -35,6 +35,7 @@ export interface RecordItem {
+ export type RecordInput = Omit<RecordItem, "databaseId">;
+ 
+ export interface Workspace {
++  settings: { name: string; accentColor: string } | null;
+   databases: WorkspaceDatabase[];
+   views: SavedView[];
+   records: RecordItem[];
+diff --git a/src/routes/app.css b/src/routes/app.css
+index 84f7e14..c3b9e01 100644
+--- a/src/routes/app.css
++++ b/src/routes/app.css
+@@ -9,20 +9,25 @@
+   --text: #e4e4e7;
+   --line: #2b2c31;
+   --sub: #989aa4;
+-  --accent: #a99bfa;
++  --accent: #b8aaf7;
++  --accent-ink: #000000;
+ }
+ 
+-* { box-sizing: border-box; }
++* {
++  box-sizing: border-box;
++  --accent-soft: color-mix(in srgb, var(--accent) 14%, #18191c);
++  --accent-text: color-mix(in srgb, var(--accent) 65%, white);
++}
+ body { margin: 0; min-width: 360px; }
+ button, input, select { font: inherit; color: inherit; }
+ button { border: 0; background: transparent; display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px; padding: 7px 10px; border-radius: 6px; text-align: left; cursor: pointer; }
+ button:hover:not(:disabled) { background: #2b2c33; }
+ button:disabled { opacity: .45; cursor: not-allowed; }
+ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+-button.primary { background: #b8aaf7; color: #241f32; font-weight: 600; }
+-button.primary:hover:not(:disabled) { background: #c7bbff; }
++button.primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
++button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, white); }
+ button.icon-button { padding: 6px; }
+ svg { flex-shrink: 0; }
+ .spacer { flex: 1; }
+-::selection { background: #51466e; color: #f5f0ff; }
++::selection { background: var(--accent); color: var(--accent-ink); }
+ @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }

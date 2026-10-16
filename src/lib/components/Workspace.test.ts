@@ -8,7 +8,7 @@ import Workspace from "./Workspace.svelte";
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn() } };
 });
 
 let data: WorkspaceData;
@@ -31,6 +31,95 @@ async function openWorkspace() {
 }
 
 describe("Folio workspace", () => {
+  it("keeps navigation and main content in the same layout container when toggling the sidebar", async () => {
+    const user = await openWorkspace();
+    const main = screen.getByRole("main");
+    const shell = main.parentElement!;
+    const sidebar = screen.getByRole("complementary", { name: "Workspace navigation" });
+    expect(sidebar.parentElement).toBe(shell);
+    expect(shell.classList.contains("sidebar-open")).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Toggle database sidebar" }));
+    expect(screen.queryByRole("complementary")).toBeNull();
+    expect(shell.classList.contains("sidebar-open")).toBe(false);
+    expect(main.parentElement).toBe(shell);
+    await user.click(screen.getByRole("button", { name: "Toggle database sidebar" }));
+    expect(screen.getByRole("complementary").parentElement).toBe(shell);
+    expect(shell.classList.contains("sidebar-open")).toBe(true);
+  });
+
+  it.each([["Teal", "#5ecfca"], ["Amber", "#f5cd6f"]])("saves the %s accent preset", async (label, accentColor) => {
+    data = { settings: null, databases: [], views: [], records: [] };
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor } });
+    const user = userEvent.setup();
+    render(Workspace);
+    await user.type(await screen.findByLabelText("Workspace name"), "Home");
+    await user.click(screen.getByRole("radio", { name: label }));
+    await user.click(screen.getByRole("button", { name: "Create workspace" }));
+    await screen.findByRole("heading", { name: "Welcome to Home" });
+    expect(api.setup).toHaveBeenCalledWith("Home", accentColor);
+  });
+
+  it("sets up an empty workspace and creates its first database without sample records", async () => {
+    data = { settings: null, databases: [], views: [], records: [] };
+    vi.mocked(api.setup).mockImplementation(async (name, accentColor) => {
+      data.settings = { name, accentColor };
+      return structuredClone(data);
+    });
+    vi.mocked(api.createDatabase).mockImplementation(async (name) => {
+      data.databases.push({ id: 1, name, description: "", icon: "layers" });
+      data.views.push({ id: 1, databaseId: 1, name: "All records", layout: "table", filterActive: false, sortActive: false, compact: false, showOwner: true });
+      return structuredClone(data);
+    });
+    const user = userEvent.setup();
+    const mounted = render(Workspace);
+    await screen.findByRole("heading", { name: "A little space, all yours." });
+    expect((screen.getByRole("button", { name: "Create workspace" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(screen.getByLabelText("Workspace name"), "  My studio  ");
+    await user.click(screen.getByRole("radio", { name: "Mint" }));
+    await user.click(screen.getByRole("button", { name: "Create workspace" }));
+    await screen.findByRole("heading", { name: "Welcome to My studio" });
+    expect(api.setup).toHaveBeenCalledWith("My studio", "#8bd5b5");
+    expect(screen.queryByRole("button", { name: "Projects" })).toBeNull();
+    await user.type(screen.getByLabelText("Database name"), "Tasks");
+    await user.click(screen.getByRole("button", { name: "Create database" }));
+    await screen.findByRole("heading", { name: "Tasks" });
+    expect(screen.getAllByRole("row")).toHaveLength(1);
+    expect(screen.getByText("0 records")).toBeTruthy();
+    expect(mounted.container.firstElementChild?.getAttribute("style")).toContain("--accent: #8bd5b5");
+    mounted.unmount();
+    render(Workspace);
+    await screen.findByRole("heading", { name: "Tasks" });
+    expect(screen.queryByLabelText("Workspace name")).toBeNull();
+  });
+
+  it("keeps setup inputs on save failure and retries with a custom color", async () => {
+    data = { settings: null, databases: [], views: [], records: [] };
+    vi.mocked(api.setup).mockRejectedValueOnce({ message: "Could not save workspace." });
+    const user = userEvent.setup();
+    render(Workspace);
+    const name = await screen.findByLabelText("Workspace name");
+    await user.type(name, "Home");
+    await fireEvent.input(screen.getByLabelText("Custom accent color"), { target: { value: "#123456" } });
+    await user.click(screen.getByRole("button", { name: "Create workspace" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save workspace.");
+    expect(name).toHaveProperty("value", "Home");
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456" } });
+    await user.click(screen.getByRole("button", { name: "Create workspace" }));
+    await screen.findByRole("heading", { name: "Welcome to Home" });
+    expect(api.setup).toHaveBeenLastCalledWith("Home", "#123456");
+  });
+
+  it("shows database creation errors without leaving the empty workspace", async () => {
+    data = { settings: { name: "Home", accentColor: "#b8aaf7" }, databases: [], views: [], records: [] };
+    vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
+    const user = userEvent.setup();
+    render(Workspace);
+    await user.type(await screen.findByLabelText("Database name"), "Tasks");
+    await user.click(screen.getByRole("button", { name: "Create database" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not create database.");
+    expect(screen.getByLabelText("Database name")).toHaveProperty("value", "Tasks");
+  });
+
   it("loads records and switches databases and saved views", async () => {
     const user = await openWorkspace();
     expect(screen.getAllByRole("row")).toHaveLength(7);

@@ -75,13 +75,16 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 1 {
+    if version > 2 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
     }
     if version == 0 {
         transaction.execute_batch(include_str!("../migrations/001_workspace.sql"))?;
+    }
+    if version < 2 {
+        transaction.execute_batch(include_str!("../migrations/002_workspace_setup.sql"))?;
     }
     transaction.commit()?;
     Ok(())
@@ -133,13 +136,33 @@ pub struct RecordInput {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSettings {
+    name: String,
+    accent_color: String,
+}
+
+#[derive(Serialize)]
 pub struct Workspace {
+    settings: Option<WorkspaceSettings>,
     databases: Vec<WorkspaceDatabase>,
     pub views: Vec<SavedView>,
     pub records: Vec<Record>,
 }
 
 pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
+    let settings = connection
+        .query_row(
+            "SELECT name, accent_color FROM workspace_settings WHERE id = 1",
+            [],
+            |row| {
+                Ok(WorkspaceSettings {
+                    name: row.get(0)?,
+                    accent_color: row.get(1)?,
+                })
+            },
+        )
+        .optional()?;
     let databases = connection
         .prepare("SELECT id, name, description, icon FROM databases ORDER BY position, id")?
         .query_map([], |row| {
@@ -158,10 +181,64 @@ pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
         .query_map([], |row| Ok(Record { id: row.get(0)?, database_id: row.get(1)?, name: row.get(2)?, status: row.get(3)?, priority: row.get(4)?, due_date: row.get(5)?, owner: row.get(6)? }))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(Workspace {
+        settings,
         databases,
         views,
         records,
     })
+}
+
+pub fn setup_workspace(
+    connection: &mut Connection,
+    name: &str,
+    accent_color: &str,
+) -> Result<Workspace, AppError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(AppError::invalid(
+            "Enter a workspace name (up to 100 characters).",
+        ));
+    }
+    if accent_color.len() != 7
+        || !accent_color.starts_with('#')
+        || !accent_color.as_bytes()[1..]
+            .iter()
+            .all(u8::is_ascii_hexdigit)
+    {
+        return Err(AppError::invalid("Choose a valid accent color."));
+    }
+    let changed = connection.execute(
+        "INSERT INTO workspace_settings (id, name, accent_color) VALUES (1, ?1, ?2) ON CONFLICT(id) DO NOTHING",
+        params![name, accent_color.to_ascii_lowercase()],
+    )?;
+    if changed == 0 {
+        return Err(AppError::invalid(
+            "This workspace is already set up. Reload to continue.",
+        ));
+    }
+    load(connection)
+}
+
+pub fn create_database(connection: &mut Connection, name: &str) -> Result<Workspace, AppError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 200 {
+        return Err(AppError::invalid(
+            "Enter a database name (up to 200 characters).",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM workspace_settings)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )? {
+        return Err(AppError::invalid("Set up your workspace first."));
+    }
+    transaction.execute("INSERT INTO databases (name, icon, position) VALUES (?1, 'layers', (SELECT COALESCE(MAX(position), -1) + 1 FROM databases))", [name])?;
+    let id = transaction.last_insert_rowid();
+    transaction.execute("INSERT INTO saved_views (database_id, name, layout, position) VALUES (?1, 'All records', 'table', 0)", [id])?;
+    transaction.commit()?;
+    load(connection)
 }
 
 fn validate_status(status: &str) -> Result<(), AppError> {
@@ -277,6 +354,7 @@ mod tests {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         migrate(&mut db).unwrap();
+        db.execute_batch(include_str!("test_seed.sql")).unwrap();
         db
     }
 
@@ -308,12 +386,12 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        db.pragma_update(None, "user_version", 2).unwrap();
+        db.pragma_update(None, "user_version", 3).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]
@@ -436,11 +514,14 @@ mod tests {
 
     #[test]
     fn data_and_settings_survive_reopening_the_file() {
-        let path = std::env::temp_dir().join(format!("folio-test-{}.sqlite", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("folio-setup-test-{}.sqlite", std::process::id()));
         {
             let mut db = Connection::open(&path).unwrap();
             migrate(&mut db).unwrap();
-            create_record(&mut db, 3, "Done").unwrap();
+            setup_workspace(&mut db, "My workspace", "#91baff").unwrap();
+            let workspace = create_database(&mut db, "Tasks").unwrap();
+            create_record(&mut db, workspace.databases[0].id, "Done").unwrap();
             let mut view = load(&mut db).unwrap().views.remove(0);
             view.show_owner = false;
             update_view(&mut db, view).unwrap();
@@ -448,9 +529,64 @@ mod tests {
         let mut db = Connection::open(&path).unwrap();
         migrate(&mut db).unwrap();
         let workspace = load(&mut db).unwrap();
-        assert_eq!(workspace.records.len(), 11);
+        assert_eq!(workspace.records.len(), 1);
+        let settings = workspace.settings.unwrap();
+        assert_eq!(settings.name, "My workspace");
+        assert_eq!(settings.accent_color, "#91baff");
         assert!(!workspace.views[0].show_owner);
         drop(db);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn fresh_install_is_empty_and_setup_is_validated() {
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        let workspace = load(&mut db).unwrap();
+        assert!(workspace.settings.is_none());
+        assert!(workspace.databases.is_empty());
+        assert!(workspace.views.is_empty());
+        assert!(workspace.records.is_empty());
+        assert!(create_database(&mut db, "Tasks").is_err());
+        for name in ["", "   ", &"x".repeat(101)] {
+            assert!(setup_workspace(&mut db, name, "#b8aaf7").is_err());
+        }
+        for color in ["red", "#fff", "#zzzzzz", "#1234567", "#12345é"] {
+            assert!(setup_workspace(&mut db, "Home", color).is_err());
+        }
+        assert!(load(&mut db).unwrap().settings.is_none());
+        let workspace = setup_workspace(&mut db, " Home ", "#B8AAF7").unwrap();
+        let settings = workspace.settings.unwrap();
+        assert_eq!(settings.name, "Home");
+        assert_eq!(settings.accent_color, "#b8aaf7");
+        assert!(workspace.databases.is_empty());
+        assert!(setup_workspace(&mut db, "Overwrite", "#000000").is_err());
+        assert!(create_database(&mut db, "  ").is_err());
+        assert!(create_database(&mut db, &"x".repeat(201)).is_err());
+        let workspace = create_database(&mut db, " Tasks ").unwrap();
+        assert_eq!(workspace.databases[0].name, "Tasks");
+        assert_eq!(workspace.views.len(), 1);
+        assert!(workspace.records.is_empty());
+    }
+
+    #[test]
+    fn legacy_workspace_is_cleared_once() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        db.execute_batch(include_str!("../migrations/001_workspace.sql"))
+            .unwrap();
+        db.execute_batch(include_str!("test_seed.sql")).unwrap();
+        migrate(&mut db).unwrap();
+        let workspace = load(&mut db).unwrap();
+        assert!(workspace.settings.is_none());
+        assert!(workspace.databases.is_empty());
+        assert!(workspace.views.is_empty());
+        assert!(workspace.records.is_empty());
+        setup_workspace(&mut db, "Fresh start", "#8bd5b5").unwrap();
+        create_database(&mut db, "Keep me").unwrap();
+        migrate(&mut db).unwrap();
+        let workspace = load(&mut db).unwrap();
+        assert_eq!(workspace.settings.unwrap().name, "Fresh start");
+        assert_eq!(workspace.databases[0].name, "Keep me");
     }
 }
