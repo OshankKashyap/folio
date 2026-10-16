@@ -47,6 +47,15 @@
   let selectedRow = $state<number | null>(null);
   let recordsElement = $state<HTMLDivElement>();
   let settingsButton = $state<HTMLButtonElement>();
+  let newDatabaseOpen = $state(false);
+  let newDatabaseDialogName = $state("");
+  let newDatabaseDialogError = $state("");
+  let newDatabaseDialogButton = $state<HTMLButtonElement>();
+  let newDatabaseDialogInput = $state<HTMLInputElement>();
+  let newDatabaseDialog = $state<HTMLDialogElement>();
+  $effect(() => {
+    if (newDatabaseDialog) { newDatabaseDialog.showModal(); newDatabaseDialogInput?.focus(); }
+  });
   let drag = $state<{ recordId: number; startX: number; startY: number; targetId: number | null; after: boolean; moved: boolean } | null>(null);
   let suppressGripClick = false;
   const accent = $derived(workspace.settings?.accentColor ?? "#b8aaf7");
@@ -107,6 +116,36 @@
     if (!newDatabaseName.trim() || busy) return;
     if (await mutate(() => api.createDatabase(newDatabaseName.trim()))) newDatabaseName = "";
   }
+
+  function openNewDatabase() {
+    newDatabaseDialogName = "";
+    newDatabaseDialogError = "";
+    newDatabaseOpen = true;
+  }
+
+  function closeNewDatabaseDialog() {
+    newDatabaseOpen = false;
+    newDatabaseDialogButton?.focus();
+  }
+
+  async function createDatabaseFromSidebar() {
+    if (!newDatabaseDialogName.trim() || busy) return;
+    const name = newDatabaseDialogName.trim();
+    newDatabaseDialogError = "";
+    busy = true;
+    try {
+      workspace = await api.createDatabase(name);
+      const created = workspace.databases.at(-1);
+      if (created) selectDatabase(created.id);
+      newDatabaseOpen = false;
+      newDatabaseDialogButton?.focus();
+    } catch (cause) {
+      newDatabaseDialogError = errorMessage(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
 
   function selectDatabase(id: number) {
     databaseId = id;
@@ -223,7 +262,12 @@
   {#if sidebarOpen}
     <aside id="database-sidebar" aria-label="Workspace navigation">
       <div class="brand"><span class="logo">f</span> folio</div>
-      <div class="caption">WORKSPACE</div>
+      <div class="caption-row">
+        <div class="caption">WORKSPACE</div>
+        {#if workspace.settings}
+          <button bind:this={newDatabaseDialogButton} class="icon-button new-db-button" aria-label="New database" aria-haspopup="dialog" onclick={openNewDatabase}><Plus size={14} /></button>
+        {/if}
+      </div>
       <nav aria-label="Databases">
         {#each workspace.databases as item (item.id)}
           <button class="db" class:active={database?.id === item.id} aria-current={database?.id === item.id ? "page" : undefined} disabled={busy} onclick={() => selectDatabase(item.id)}>
@@ -366,6 +410,26 @@
 {#if preferencesOpen}
   <SettingsPanel {fontFamily} {busy} {error} onSave={saveFont} onClose={closePreferences} />
 {/if}
+
+{#if newDatabaseOpen}
+  <dialog
+    bind:this={newDatabaseDialog}
+    aria-labelledby="new-db-heading"
+    oncancel={(event) => { event.preventDefault(); closeNewDatabaseDialog(); }}
+    onclick={(event) => { if (event.target === event.currentTarget) closeNewDatabaseDialog(); }}
+  >
+    <h2 id="new-db-heading">New database</h2>
+    <form onsubmit={(event) => { event.preventDefault(); void createDatabaseFromSidebar(); }}>
+      <label for="new-db-name">Database name</label>
+      <input id="new-db-name" bind:this={newDatabaseDialogInput} bind:value={newDatabaseDialogName} required maxlength="200" disabled={busy} placeholder="e.g. Tasks" />
+      {#if newDatabaseDialogError}<p role="alert">{newDatabaseDialogError}</p>{/if}
+      <div class="new-db-actions">
+        <button type="button" disabled={busy} onclick={closeNewDatabaseDialog}>Cancel</button>
+        <button class="primary" disabled={busy || !newDatabaseDialogName.trim()}>{busy ? "Creating…" : "Create"}</button>
+      </div>
+    </form>
+  </dialog>
+{/if}
 </div>
 
 <style>
@@ -472,4 +536,15 @@
     .tabs { gap: 0; }
     .tabs button { font-size: 12px; padding: 10px 7px; }
   }
+  .caption-row { position: relative; display: flex; align-items: center; padding: 20px 10px 8px; }
+  .caption-row .caption { padding: 0; flex: 1; }
+  .new-db-button { color: var(--sub); }
+  .new-db-button:hover:not(:disabled) { color: var(--text); }
+  dialog { background: #1c1d21; border: 1px solid var(--line); border-radius: 10px; padding: 24px; width: min(360px, calc(100vw - 48px)); color: var(--text); }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+  dialog h2 { margin: 0 0 20px; font-size: 16px; font-weight: 600; letter-spacing: -0.3px; }
+  dialog label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--sub); }
+  dialog input { width: 100%; background: #202125; border: 1px solid #3b3c44; border-radius: 6px; padding: 10px 12px; box-sizing: border-box; }
+  dialog p[role="alert"] { color: #f1bbc2; font-size: 12px; margin: 6px 0 0; }
+  .new-db-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 </style>

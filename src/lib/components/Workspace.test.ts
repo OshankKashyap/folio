@@ -475,4 +475,77 @@ describe("Folio workspace", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("heading", { name: "Projects" })).toBeTruthy();
   });
+
+  it("renders the New database button in the caption row of the sidebar", async () => {
+    await openWorkspace();
+    const sidebar = screen.getByRole("complementary", { name: "Workspace navigation" });
+    const btn = within(sidebar).getByRole("button", { name: "New database" });
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn.getAttribute("aria-haspopup")).toBe("dialog");
+  });
+
+  it("clicking New database opens the dialog and focuses the name input", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    const dialog = await screen.findByRole("dialog", { name: "New database" });
+    expect(within(dialog).getByRole("heading", { name: "New database" })).toBeTruthy();
+    expect(within(dialog).getByLabelText("Database name")).toBeTruthy();
+  });
+
+  it("Create calls api.createDatabase, selects the new database, and closes the dialog", async () => {
+    const user = await openWorkspace();
+    vi.mocked(api.createDatabase).mockImplementation(async (name) => {
+      data.databases.push({ id: 99, name, description: "", icon: "layers" });
+      data.views.push({ id: 99, databaseId: 99, name: "All records", layout: "table", filterActive: false, sortActive: false, compact: false, showOwner: true });
+      return structuredClone(data);
+    });
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    const dialog = await screen.findByRole("dialog", { name: "New database" });
+    await user.type(within(dialog).getByLabelText("Database name"), "Archive");
+    await user.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New database" })).toBeNull());
+    expect(api.createDatabase).toHaveBeenCalledWith("Archive");
+    expect(await screen.findByRole("heading", { name: "Archive" })).toBeTruthy();
+  });
+
+  it("Cancel closes the dialog and returns focus to the New database button", async () => {
+    const user = await openWorkspace();
+    const trigger = screen.getByRole("button", { name: "New database" });
+    await user.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "New database" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New database" })).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("Esc closes the New database dialog and returns focus to the trigger", async () => {
+    const user = await openWorkspace();
+    const trigger = screen.getByRole("button", { name: "New database" });
+    await user.click(trigger);
+    await screen.findByRole("dialog", { name: "New database" });
+    await fireEvent(screen.getByRole("dialog", { name: "New database" }), new Event("cancel"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New database" })).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("backdrop click closes the New database dialog", async () => {
+    const user = await openWorkspace();
+    const trigger = screen.getByRole("button", { name: "New database" });
+    await user.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "New database" });
+    await fireEvent.click(dialog);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New database" })).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("api error keeps the dialog open and shows the error inline", async () => {
+    const user = await openWorkspace();
+    vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    const dialog = await screen.findByRole("dialog", { name: "New database" });
+    await user.type(within(dialog).getByLabelText("Database name"), "Broken");
+    await user.click(within(dialog).getByRole("button", { name: "Create" }));
+    expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", "Could not create database.");
+    expect(screen.getByRole("dialog", { name: "New database" })).toBeTruthy();
+  });
 });
