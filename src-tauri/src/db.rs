@@ -13,7 +13,7 @@ pub struct AppError {
 }
 
 impl AppError {
-    fn invalid(message: &'static str) -> Self {
+    pub(crate) fn invalid(message: &'static str) -> Self {
         Self {
             code: "invalid_input",
             message,
@@ -75,7 +75,7 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 3 {
+    if version > 4 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
@@ -89,6 +89,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     if version < 3 {
         transaction.execute_batch(include_str!("../migrations/003_interface_font.sql"))?;
     }
+    if version < 4 {
+        transaction.execute_batch(include_str!("../migrations/004_database_icons.sql"))?;
+    }
     transaction.commit()?;
     Ok(())
 }
@@ -100,6 +103,8 @@ pub struct WorkspaceDatabase {
     name: String,
     description: String,
     icon: String,
+    emoji: String,
+    custom_icon: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -169,13 +174,15 @@ pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
         )
         .optional()?;
     let databases = connection
-        .prepare("SELECT id, name, description, icon FROM databases ORDER BY position, id")?
+        .prepare("SELECT id, name, description, icon, emoji, custom_icon FROM databases ORDER BY position, id")?
         .query_map([], |row| {
             Ok(WorkspaceDatabase {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
                 icon: row.get(3)?,
+                emoji: row.get(4)?,
+                custom_icon: row.get(5)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -244,12 +251,27 @@ pub fn set_font_family(
     load(connection)
 }
 
-pub fn create_database(connection: &mut Connection, name: &str) -> Result<Workspace, AppError> {
+pub fn create_database(
+    connection: &mut Connection,
+    name: &str,
+    emoji: Option<&str>,
+    custom_icon: Option<&str>,
+) -> Result<Workspace, AppError> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 200 {
         return Err(AppError::invalid(
             "Enter a database name (up to 200 characters).",
         ));
+    }
+    let emoji = emoji.unwrap_or_default().trim();
+    if emoji.chars().count() > 16 || emoji.chars().any(char::is_control) {
+        return Err(AppError::invalid(
+            "Choose an emoji (up to 16 characters, without control characters).",
+        ));
+    }
+    let custom_icon = custom_icon.filter(|icon| !icon.is_empty());
+    if let Some(icon) = custom_icon {
+        validate_custom_icon(icon)?;
     }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if !transaction.query_row(
@@ -259,11 +281,43 @@ pub fn create_database(connection: &mut Connection, name: &str) -> Result<Worksp
     )? {
         return Err(AppError::invalid("Set up your workspace first."));
     }
-    transaction.execute("INSERT INTO databases (name, icon, position) VALUES (?1, 'layers', (SELECT COALESCE(MAX(position), -1) + 1 FROM databases))", [name])?;
+    transaction.execute("INSERT INTO databases (name, icon, emoji, custom_icon, position) VALUES (?1, 'layers', ?2, ?3, (SELECT COALESCE(MAX(position), -1) + 1 FROM databases))", params![name, emoji, custom_icon])?;
     let id = transaction.last_insert_rowid();
     transaction.execute("INSERT INTO saved_views (database_id, name, layout, position) VALUES (?1, 'All records', 'table', 0)", [id])?;
     transaction.commit()?;
     load(connection)
+}
+
+fn validate_custom_icon(icon: &str) -> Result<(), AppError> {
+    let invalid = || {
+        AppError::invalid("Choose a PNG, JPEG, or WebP data URI with valid base64 (up to 256 KB).")
+    };
+    if icon.len() > 350_000 {
+        return Err(invalid());
+    }
+    let payload = ["png", "jpeg", "webp"]
+        .iter()
+        .find_map(|mime| icon.strip_prefix(&format!("data:image/{mime};base64,")))
+        .ok_or_else(invalid)?;
+    let data = payload.trim_end_matches('=');
+    let padding = payload.len() - data.len();
+    // Validate canonical base64 and its exact decoded size without allocating a decoded copy.
+    if payload.is_empty()
+        || !payload.len().is_multiple_of(4)
+        || padding > 2
+        || !data
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
+        || (padding == 2 && !data.ends_with(['A', 'Q', 'g', 'w']))
+        || (padding == 1
+            && !data.ends_with([
+                'A', 'E', 'I', 'M', 'Q', 'U', 'Y', 'c', 'g', 'k', 'o', 's', 'w', '0', '4', '8',
+            ]))
+        || payload.len() / 4 * 3 - padding > 256 * 1024
+    {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 fn validate_status(status: &str) -> Result<(), AppError> {
@@ -411,12 +465,12 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        db.pragma_update(None, "user_version", 4).unwrap();
+        db.pragma_update(None, "user_version", 5).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -546,7 +600,13 @@ mod tests {
             migrate(&mut db).unwrap();
             setup_workspace(&mut db, "My workspace", "#91baff").unwrap();
             set_font_family(&mut db, "Liberation Sans").unwrap();
-            let workspace = create_database(&mut db, "Tasks").unwrap();
+            let workspace = create_database(
+                &mut db,
+                "Tasks",
+                Some("🚀"),
+                Some("data:image/png;base64,AAAA"),
+            )
+            .unwrap();
             create_record(&mut db, workspace.databases[0].id, "Done").unwrap();
             let mut view = load(&mut db).unwrap().views.remove(0);
             view.show_owner = false;
@@ -556,6 +616,11 @@ mod tests {
         migrate(&mut db).unwrap();
         let workspace = load(&mut db).unwrap();
         assert_eq!(workspace.records.len(), 1);
+        assert_eq!(workspace.databases[0].emoji, "🚀");
+        assert_eq!(
+            workspace.databases[0].custom_icon.as_deref(),
+            Some("data:image/png;base64,AAAA")
+        );
         let settings = workspace.settings.unwrap();
         assert_eq!(settings.name, "My workspace");
         assert_eq!(settings.accent_color, "#91baff");
@@ -574,7 +639,7 @@ mod tests {
         assert!(workspace.databases.is_empty());
         assert!(workspace.views.is_empty());
         assert!(workspace.records.is_empty());
-        assert!(create_database(&mut db, "Tasks").is_err());
+        assert!(create_database(&mut db, "Tasks", None, None).is_err());
         for name in ["", "   ", &"x".repeat(101)] {
             assert!(setup_workspace(&mut db, name, "#b8aaf7").is_err());
         }
@@ -588,16 +653,19 @@ mod tests {
         assert_eq!(settings.accent_color, "#b8aaf7");
         assert!(workspace.databases.is_empty());
         assert!(setup_workspace(&mut db, "Overwrite", "#000000").is_err());
-        assert!(create_database(&mut db, "  ").is_err());
-        assert!(create_database(&mut db, &"x".repeat(201)).is_err());
-        let workspace = create_database(&mut db, " Tasks ").unwrap();
+        assert!(create_database(&mut db, "  ", None, None).is_err());
+        assert!(create_database(&mut db, &"x".repeat(201), None, None).is_err());
+        let workspace = create_database(&mut db, " Tasks ", None, None).unwrap();
         assert_eq!(workspace.databases[0].name, "Tasks");
+        assert_eq!(workspace.databases[0].icon, "layers");
+        assert_eq!(workspace.databases[0].emoji, "");
+        assert!(workspace.databases[0].custom_icon.is_none());
         assert_eq!(workspace.views.len(), 1);
         assert!(workspace.records.is_empty());
     }
 
     #[test]
-    fn font_migration_preserves_existing_workspace_rows() {
+    fn font_and_icon_migrations_preserve_existing_workspace_rows() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch(include_str!("../migrations/001_workspace.sql"))
             .unwrap();
@@ -606,9 +674,14 @@ mod tests {
         db.execute_batch(include_str!("test_seed.sql")).unwrap();
         db.execute("INSERT INTO workspace_settings (id, name, accent_color) VALUES (1, 'Keep me', '#91baff')", []).unwrap();
         let snapshot = |db: &Connection| {
-            ["databases", "saved_views", "records"].map(|table| {
+            [
+                ("databases", "id, name, description, icon, position"),
+                ("saved_views", "*"),
+                ("records", "*"),
+            ]
+            .map(|(table, columns)| {
                 let mut statement = db
-                    .prepare(&format!("SELECT * FROM {table} ORDER BY id"))
+                    .prepare(&format!("SELECT {columns} FROM {table} ORDER BY id"))
                     .unwrap();
                 let columns = statement.column_count();
                 statement
@@ -623,19 +696,109 @@ mod tests {
             })
         };
         let before = snapshot(&db);
+        db.execute_batch(include_str!("../migrations/003_interface_font.sql"))
+            .unwrap();
+        assert_eq!(snapshot(&db), before);
+        assert_eq!(
+            db.query_row("SELECT font_family FROM workspace_settings", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            ""
+        );
+        db.execute(
+            "UPDATE workspace_settings SET font_family = 'Installed Font'",
+            [],
+        )
+        .unwrap();
         migrate(&mut db).unwrap();
         assert_eq!(snapshot(&db), before);
-        let settings = load(&mut db).unwrap().settings.unwrap();
+        let workspace = load(&mut db).unwrap();
+        assert!(
+            workspace
+                .databases
+                .iter()
+                .all(|database| database.emoji.is_empty() && database.custom_icon.is_none())
+        );
+        let settings = workspace.settings.unwrap();
         assert_eq!(settings.name, "Keep me");
         assert_eq!(settings.accent_color, "#91baff");
-        assert_eq!(settings.font_family, "");
+        assert_eq!(settings.font_family, "Installed Font");
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         migrate(&mut db).unwrap();
         assert_eq!(snapshot(&db), before);
+    }
+
+    #[test]
+    fn database_icons_are_validated_and_creation_is_atomic() {
+        let mut db = connection();
+        setup_workspace(&mut db, "Home", "#91baff").unwrap();
+        let before = load(&mut db).unwrap();
+        let workspace = create_database(&mut db, "Emoji", Some("  👩‍💻  "), None).unwrap();
+        let emoji_database = workspace.databases.last().unwrap();
+        assert_eq!(emoji_database.emoji, "👩‍💻");
+        assert!(emoji_database.custom_icon.is_none());
+        for mime in ["png", "jpeg", "webp"] {
+            let icon = format!("data:image/{mime};base64,AA==");
+            let workspace = create_database(&mut db, mime, None, Some(&icon)).unwrap();
+            assert_eq!(
+                workspace.databases.last().unwrap().custom_icon.as_deref(),
+                Some(icon.as_str())
+            );
+        }
+        let workspace = create_database(&mut db, "Default", Some("  "), Some("")).unwrap();
+        assert_eq!(workspace.databases.last().unwrap().emoji, "");
+        assert!(workspace.databases.last().unwrap().custom_icon.is_none());
+        let count = workspace.databases.len();
+        for emoji in ["⭐".repeat(17), "⭐\n⭐".into()] {
+            assert_eq!(
+                create_database(&mut db, "Invalid", Some(&emoji), None)
+                    .err()
+                    .unwrap()
+                    .code,
+                "invalid_input"
+            );
+        }
+        for icon in [
+            "data:image/svg+xml;base64,AAAA".into(),
+            "data:text/plain;base64,AAAA".into(),
+            "https://example.com/icon.png".into(),
+            "data:image/png;base64,".into(),
+            "data:image/png;base64,!!!!".into(),
+            "data:image/png;base64,AA=A".into(),
+            "data:image/png;base64,AB==".into(),
+            "data:image/png;base64,AAA".into(),
+            format!("data:image/png;base64,{}", "A".repeat(349_528)),
+            format!("data:image/png;base64,{}", "A".repeat(350_000)),
+        ] {
+            assert_eq!(
+                create_database(&mut db, "Invalid", None, Some(&icon))
+                    .err()
+                    .unwrap()
+                    .code,
+                "invalid_input"
+            );
+        }
+        assert_eq!(load(&mut db).unwrap().databases.len(), count);
+        let maximum = format!("data:image/png;base64,{}AA==", "A".repeat(349_524));
+        assert!(create_database(&mut db, "Maximum", None, Some(&maximum)).is_ok());
+        db.execute_batch("CREATE TRIGGER fail_view BEFORE INSERT ON saved_views BEGIN SELECT RAISE(ABORT, 'test write failure'); END;").unwrap();
+        assert!(create_database(&mut db, "Rollback", Some("⭐"), None).is_err());
+        let after = load(&mut db).unwrap();
+        assert_eq!(after.databases.len(), count + 1);
+        assert_eq!(after.views.len(), before.views.len() + 6);
+        assert_eq!(
+            serde_json::to_value(&after.records).unwrap(),
+            serde_json::to_value(&before.records).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&after.views[..before.views.len()]).unwrap(),
+            serde_json::to_value(&before.views).unwrap()
+        );
     }
 
     #[test]
@@ -683,7 +846,7 @@ mod tests {
         assert!(workspace.views.is_empty());
         assert!(workspace.records.is_empty());
         setup_workspace(&mut db, "Fresh start", "#8bd5b5").unwrap();
-        create_database(&mut db, "Keep me").unwrap();
+        create_database(&mut db, "Keep me", None, None).unwrap();
         migrate(&mut db).unwrap();
         let workspace = load(&mut db).unwrap();
         assert_eq!(workspace.settings.unwrap().name, "Fresh start");

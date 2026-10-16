@@ -1,9 +1,11 @@
+mod database_icons;
 mod db;
 mod fonts;
 mod window_layout;
 
 use db::{AppError, Database, RecordInput, SavedView, Workspace};
 use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use window_layout::WindowButtonLayout;
 
 #[tauri::command]
@@ -36,10 +38,37 @@ async fn set_font_family(
 async fn create_database(
     database: State<'_, Database>,
     name: String,
+    emoji: Option<String>,
+    custom_icon: Option<String>,
 ) -> Result<Workspace, AppError> {
     database
-        .run(move |connection| db::create_database(connection, &name))
+        .run(move |connection| {
+            db::create_database(connection, &name, emoji.as_deref(), custom_icon.as_deref())
+        })
         .await
+}
+
+#[tauri::command]
+async fn pick_database_icon(window: tauri::WebviewWindow) -> Result<Option<String>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("Choose database icon")
+            .add_filter("Images (PNG, JPEG, WebP)", &["png", "jpg", "jpeg", "webp"])
+            .blocking_pick_file();
+        selected
+            .map(|file| {
+                let path = file.into_path().map_err(|_| {
+                    AppError::invalid("Could not read this image. Please try again.")
+                })?;
+                database_icons::read_icon(&path)
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|_| AppError::invalid("The system file chooser is unavailable. Please try again."))?
 }
 
 #[tauri::command]
@@ -123,6 +152,7 @@ async fn check_font_available(font_family: String) -> Result<bool, &'static str>
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
             std::fs::create_dir_all(&directory)?;
@@ -136,6 +166,7 @@ pub fn run() {
             get_default_font,
             check_font_available,
             create_database,
+            pick_database_icon,
             create_record,
             update_record,
             delete_record,

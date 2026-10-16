@@ -5,7 +5,8 @@ A local-first database workspace built with Tauri 2, Svelte 5, SvelteKit, TypeSc
 ## Features
 
 - First-launch setup for a workspace name and accent color (presets or a custom color)
-- Empty workspace with a first-database creation flow; no sample records
+- Empty workspace with first and additional database creation; no sample records
+- Per-database default, emoji, or uploaded PNG/JPEG/WebP icons chosen at creation time
 - Retractable sidebar with workspace identity
 - Table, status board, and list layouts over the same records
 - Per-database saved views with persistent layout, In progress filter, alphabetical sort, compact rows, and owner visibility
@@ -18,6 +19,7 @@ A local-first database workspace built with Tauri 2, Svelte 5, SvelteKit, TypeSc
 - Node.js 22.12+ (or a newer supported LTS) and npm
 - Rust stable via rustup
 - [Tauri platform prerequisites](https://tauri.app/start/prerequisites/)
+- Linux icon uploads require XDG Desktop Portal and a FileChooser backend for your desktop (such as `xdg-desktop-portal-kde` on KDE).
 
 On Debian/Ubuntu, the Linux prerequisites can be installed with:
 
@@ -50,7 +52,7 @@ The database file is `folio.sqlite3` in Tauri’s application data directory. On
 
 To back up the workspace, close Folio first, then copy the database file. Data is local but not encrypted; device access controls still apply.
 
-Custom properties, additional database management beyond creating the first database, saved-view creation/deletion, advanced filters, board drag-and-drop, sync, authentication, and import/export are not included in this first implementation.
+Custom properties, database management beyond creation (including editing existing icons), saved-view creation/deletion, advanced filters, board drag-and-drop, sync, authentication, and import/export are not included in this first implementation.
 
 ## Checks and builds
 

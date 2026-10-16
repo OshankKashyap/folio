@@ -10,7 +10,7 @@ import workspaceSource from "./Workspace.svelte?raw";
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn() } };
 });
 
 let data: WorkspaceData;
@@ -20,6 +20,7 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   data = fixture();
   vi.mocked(api.load).mockImplementation(async () => structuredClone(data));
+  vi.mocked(api.pickDatabaseIcon).mockResolvedValue(null);
   document.documentElement.style.removeProperty("--app-font");
   vi.mocked(api.getDefaultFont).mockResolvedValue("Noto Sans Display");
   vi.mocked(api.checkFontAvailable).mockImplementation(async (font) => font === "Installed Font");
@@ -86,7 +87,7 @@ describe("Folio workspace", () => {
       return structuredClone(data);
     });
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
-      data.databases.push({ id: 1, name, description: "", icon: "layers" });
+      data.databases.push({ id: 1, name, description: "", icon: "layers", emoji: "", customIcon: null });
       data.views.push({ id: 1, databaseId: 1, name: "All records", layout: "table", filterActive: false, sortActive: false, compact: false, showOwner: true });
       return structuredClone(data);
     });
@@ -495,7 +496,7 @@ describe("Folio workspace", () => {
   it("Create calls api.createDatabase, selects the new database, and closes the dialog", async () => {
     const user = await openWorkspace();
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
-      data.databases.push({ id: 99, name, description: "", icon: "layers" });
+      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: "", customIcon: null });
       data.views.push({ id: 99, databaseId: 99, name: "All records", layout: "table", filterActive: false, sortActive: false, compact: false, showOwner: true });
       return structuredClone(data);
     });
@@ -516,6 +517,181 @@ describe("Folio workspace", () => {
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New database" })).toBeNull());
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it("offers three native radio modes and resets the picker when reopened", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    const dialog = screen.getByRole("dialog", { name: "New database" });
+    expect(within(dialog).getAllByRole("radio")).toHaveLength(3);
+    expect((within(dialog).getByRole("radio", { name: "Default" }) as HTMLInputElement).checked).toBe(true);
+    await user.click(within(dialog).getByRole("radio", { name: "Emoji" }));
+    expect(within(dialog).getAllByRole("button", { name: /^Choose / })).toHaveLength(48);
+    await user.click(within(dialog).getByRole("button", { name: "Choose ⭐" }));
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    expect((screen.getByRole("radio", { name: "Default" }) as HTMLInputElement).checked).toBe(true);
+    await user.click(screen.getByRole("radio", { name: "Emoji" }));
+    expect((screen.getByLabelText("Paste any emoji") as HTMLInputElement).value).toBe("");
+  });
+
+  it("passes a selected emoji to creation and renders it in the sidebar", async () => {
+    const user = await openWorkspace();
+    vi.mocked(api.createDatabase).mockImplementation(async (name, icon) => {
+      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: icon?.emoji ?? "", customIcon: null });
+      return structuredClone(data);
+    });
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Stars");
+    await user.click(screen.getByRole("radio", { name: "Emoji" }));
+    await user.click(screen.getByRole("button", { name: "Choose ⭐" }));
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(api.createDatabase).toHaveBeenCalledWith("Stars", { emoji: "⭐" }));
+    expect(await screen.findByRole("button", { name: "Stars" })).toHaveProperty("textContent", "⭐ Stars");
+  });
+
+  it.each(["👩‍💻", "🇮🇳", "1️⃣"])("accepts the single-grapheme emoji %s", async (emoji) => {
+    const user = await openWorkspace();
+    vi.mocked(api.createDatabase).mockResolvedValue(data);
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Emoji");
+    await user.click(screen.getByRole("radio", { name: "Emoji" }));
+    await fireEvent.input(screen.getByLabelText("Paste any emoji"), { target: { value: emoji } });
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.createDatabase).toHaveBeenCalledWith("Emoji", { emoji });
+  });
+
+  it.each(["⭐🚀", "a", "⭐".repeat(17)])("rejects invalid pasted emoji %s without creating", async (emoji) => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Invalid");
+    await user.click(screen.getByRole("radio", { name: "Emoji" }));
+    await fireEvent.input(screen.getByLabelText("Paste any emoji"), { target: { value: emoji } });
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Choose or paste exactly one emoji (up to 16 characters).");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.createDatabase).not.toHaveBeenCalled();
+  });
+
+  it("opens the system chooser, previews the returned data URI and passes it to creation", async () => {
+    const user = await openWorkspace();
+    const uri = "data:image/png;base64,AAAA";
+    vi.mocked(api.pickDatabaseIcon).mockResolvedValue(uri);
+    vi.mocked(api.createDatabase).mockImplementation(async (name, icon) => {
+      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: "⭐", customIcon: icon?.customIcon ?? null });
+      return structuredClone(data);
+    });
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Photo");
+    await user.click(screen.getByRole("radio", { name: "Upload" }));
+    await user.click(screen.getByRole("button", { name: "Upload image (PNG, JPEG, WebP; up to 256 KB)" }));
+    expect(api.pickDatabaseIcon).toHaveBeenCalledWith();
+    expect(screen.getByRole("img", { name: "Uploaded database icon preview" }).getAttribute("src")).toBe(uri);
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.createDatabase).toHaveBeenCalledWith("Photo", { customIcon: uri });
+    const icon = await screen.findByRole("img", { name: "Photo icon" });
+    expect(icon.getAttribute("src")).toBe(uri);
+    expect(icon.parentElement?.querySelector(".database-emoji")).toBeNull();
+  });
+
+  it("shows native upload validation errors inline without creating", async () => {
+    const user = await openWorkspace();
+    vi.mocked(api.pickDatabaseIcon).mockRejectedValue({ message: "Choose a PNG, JPEG, or WebP image up to 256 KB." });
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Invalid");
+    await user.click(screen.getByRole("radio", { name: "Upload" }));
+    await user.click(screen.getByRole("button", { name: /Upload image/ }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Choose a PNG, JPEG, or WebP image up to 256 KB.");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.createDatabase).not.toHaveBeenCalled();
+  });
+
+  it("ignores inactive icon fields in Default mode", async () => {
+    const user = await openWorkspace();
+    vi.mocked(api.createDatabase).mockResolvedValue(data);
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Default");
+    await user.click(screen.getByRole("radio", { name: "Emoji" }));
+    await user.click(screen.getByRole("button", { name: "Choose ⭐" }));
+    await user.click(screen.getByRole("radio", { name: "Default" }));
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.createDatabase).toHaveBeenCalledWith("Default");
+  });
+
+  it("blocks submission and duplicate picks while choosing and lets the preview be removed", async () => {
+    const user = await openWorkspace();
+    let finish: (icon: string | null) => void;
+    vi.mocked(api.pickDatabaseIcon).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    vi.mocked(api.createDatabase).mockResolvedValue(data);
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Removed");
+    await user.click(screen.getByRole("radio", { name: "Upload" }));
+    await user.click(screen.getByRole("button", { name: /Upload image/ }));
+    await user.click(screen.getByRole("button", { name: /Upload image/ }));
+    expect(api.pickDatabaseIcon).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.createDatabase).not.toHaveBeenCalled();
+    finish!("data:image/png;base64,AAAA");
+    expect(await screen.findByRole("img", { name: "Uploaded database icon preview" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Remove image" }));
+    expect(screen.queryByRole("img", { name: "Uploaded database icon preview" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.createDatabase).toHaveBeenCalledWith("Removed");
+  });
+
+  it("shows file read failures inline without creating", async () => {
+    const user = await openWorkspace();
+    vi.mocked(api.pickDatabaseIcon).mockRejectedValue({ message: "Could not read this image. Please try again." });
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Unreadable");
+    await user.click(screen.getByRole("radio", { name: "Upload" }));
+    await user.click(screen.getByRole("button", { name: /Upload image/ }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not read this image. Please try again.");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.createDatabase).not.toHaveBeenCalled();
+  });
+
+  it("leaves the selected image unchanged when the native chooser is cancelled", async () => {
+    const user = await openWorkspace();
+    const uri = "data:image/png;base64,AAAA";
+    vi.mocked(api.pickDatabaseIcon).mockResolvedValueOnce(uri).mockResolvedValueOnce(null);
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.click(screen.getByRole("radio", { name: "Upload" }));
+    await user.click(screen.getByRole("button", { name: /Upload image/ }));
+    await user.click(screen.getByRole("button", { name: /Upload image/ }));
+    expect(screen.getByRole("img", { name: "Uploaded database icon preview" }).getAttribute("src")).toBe(uri);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(api.createDatabase).not.toHaveBeenCalled();
+  });
+
+  it("ignores a native chooser result after closing and reopening the creation dialog", async () => {
+    const user = await openWorkspace();
+    let finish: (icon: string | null) => void;
+    vi.mocked(api.pickDatabaseIcon).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.click(screen.getByRole("radio", { name: "Upload" }));
+    await user.click(screen.getByRole("button", { name: /Upload image/ }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.click(screen.getByRole("radio", { name: "Upload" }));
+    finish!("data:image/png;base64,AAAA");
+    await waitFor(() => expect(within(screen.getByRole("dialog")).queryByRole("status")).toBeNull());
+    expect(screen.queryByRole("img", { name: "Uploaded database icon preview" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("guards duplicate submission and disables the picker while creating", async () => {
+    const user = await openWorkspace();
+    let finish: (workspace: WorkspaceData) => void;
+    vi.mocked(api.createDatabase).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await user.click(screen.getByRole("button", { name: "New database" }));
+    await user.type(screen.getByLabelText("Database name"), "Busy");
+    const form = screen.getByLabelText("Database name").closest("form")!;
+    await fireEvent.submit(form);
+    await fireEvent.submit(form);
+    expect(api.createDatabase).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("radio", { name: "Emoji" }).closest("fieldset")?.disabled).toBe(true);
+    finish!(data);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("Esc closes the New database dialog and returns focus to the trigger", async () => {

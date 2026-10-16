@@ -4,9 +4,9 @@ export function fixture(): Workspace {
   return {
     settings: { name: "Test workspace", accentColor: "#b8aaf7", fontFamily: "" },
     databases: [
-      { id: 1, name: "Projects", description: "A little structure for everything you’re building.", icon: "layers" },
-      { id: 2, name: "Reading list", description: "Good ideas start with a good book.", icon: "book" },
-      { id: 3, name: "Ideas", description: "A home for your next big thing.", icon: "idea" },
+      { id: 1, name: "Projects", description: "A little structure for everything you’re building.", icon: "layers", emoji: "", customIcon: null },
+      { id: 2, name: "Reading list", description: "Good ideas start with a good book.", icon: "book", emoji: "", customIcon: null },
+      { id: 3, name: "Ideas", description: "A home for your next big thing.", icon: "idea", emoji: "", customIcon: null },
     ],
     views: [1, 2, 3].flatMap((databaseId) => [
       { id: databaseId * 10, databaseId, name: "All records", layout: "table" as const, filterActive: false, sortActive: false, compact: false, showOwner: true },

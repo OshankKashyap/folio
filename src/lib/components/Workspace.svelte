@@ -50,6 +50,19 @@
   let newDatabaseOpen = $state(false);
   let newDatabaseDialogName = $state("");
   let newDatabaseDialogError = $state("");
+  let iconMode = $state<"Default" | "Emoji" | "Upload">("Default");
+  let databaseEmoji = $state("");
+  let customIcon = $state("");
+  let uploadError = $state("");
+  let readingIcon = $state(false);
+  let iconRequest: object | undefined;
+  const emojis = ["📁", "📂", "🗂️", "📚", "📖", "📝", "📋", "📌", "⭐", "🌟", "✨", "💡", "💼", "🛠️", "⚙️", "💻", "🎯", "📊", "📈", "🗓️", "🎮", "🎲", "🧩", "🏆", "🎨", "🎵", "🎬", "📷", "❤️", "💜", "💙", "💚", "🏠", "🌍", "🌱", "🌻", "☀️", "🌙", "🚀", "✈️", "☕", "🍕", "🐱", "🐶", "🔥", "✅", "🔖", "🔬"];
+  const emojiError = $derived(databaseEmoji.trim() &&
+    ([...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(databaseEmoji.trim())].length !== 1 ||
+      Array.from(databaseEmoji.trim()).length > 16 || /\p{Cc}/u.test(databaseEmoji.trim()) ||
+      !/[\p{Extended_Pictographic}\p{Regional_Indicator}\u20e3]/u.test(databaseEmoji.trim()))
+    ? "Choose or paste exactly one emoji (up to 16 characters)." : "");
+  const iconError = $derived(iconMode === "Emoji" ? emojiError : iconMode === "Upload" ? uploadError : "");
   let newDatabaseDialogButton = $state<HTMLButtonElement>();
   let newDatabaseDialogInput = $state<HTMLInputElement>();
   let newDatabaseDialog = $state<HTMLDialogElement>();
@@ -120,32 +133,65 @@
   function openNewDatabase() {
     newDatabaseDialogName = "";
     newDatabaseDialogError = "";
+    iconMode = "Default";
+    databaseEmoji = "";
+    removeUploadedIcon();
     newDatabaseOpen = true;
   }
 
+  function removeUploadedIcon() {
+    iconRequest = undefined;
+    readingIcon = false;
+    customIcon = "";
+    uploadError = "";
+  }
+
+  async function uploadDatabaseIcon() {
+    if (busy || readingIcon) return;
+    const request = {};
+    iconRequest = request;
+    readingIcon = true;
+    uploadError = "";
+    try {
+      const selected = await api.pickDatabaseIcon();
+      if (iconRequest === request && selected !== null) customIcon = selected;
+    } catch (cause) {
+      if (iconRequest === request) uploadError = errorMessage(cause);
+    } finally {
+      if (iconRequest === request) {
+        iconRequest = undefined;
+        readingIcon = false;
+      }
+    }
+  }
+
   function closeNewDatabaseDialog() {
+    iconRequest = undefined;
+    readingIcon = false;
     newDatabaseOpen = false;
     newDatabaseDialogButton?.focus();
   }
 
   async function createDatabaseFromSidebar() {
-    if (!newDatabaseDialogName.trim() || busy) return;
+    if (!newDatabaseDialogName.trim() || busy || iconError || (iconMode === "Upload" && readingIcon)) return;
     const name = newDatabaseDialogName.trim();
     newDatabaseDialogError = "";
     busy = true;
     try {
-      workspace = await api.createDatabase(name);
+      workspace = iconMode === "Emoji" && databaseEmoji.trim()
+        ? await api.createDatabase(name, { emoji: databaseEmoji.trim() })
+        : iconMode === "Upload" && customIcon
+          ? await api.createDatabase(name, { customIcon })
+          : await api.createDatabase(name);
       const created = workspace.databases.at(-1);
       if (created) selectDatabase(created.id);
-      newDatabaseOpen = false;
-      newDatabaseDialogButton?.focus();
+      closeNewDatabaseDialog();
     } catch (cause) {
       newDatabaseDialogError = errorMessage(cause);
     } finally {
       busy = false;
     }
   }
-
 
   function selectDatabase(id: number) {
     databaseId = id;
@@ -271,7 +317,7 @@
       <nav aria-label="Databases">
         {#each workspace.databases as item (item.id)}
           <button class="db" class:active={database?.id === item.id} aria-current={database?.id === item.id ? "page" : undefined} disabled={busy} onclick={() => selectDatabase(item.id)}>
-            {#if item.icon === "book"}<BookOpen size={16} />{:else if item.icon === "idea"}<Lightbulb size={16} />{:else}<Layers size={16} />{/if}
+            {#if item.customIcon}<img class="database-icon" src={item.customIcon} alt={`${item.name} icon`} />{:else if item.emoji}<span class="database-emoji" aria-hidden="true">{item.emoji}</span>{:else if item.icon === "book"}<BookOpen size={16} />{:else if item.icon === "idea"}<Lightbulb size={16} />{:else}<Layers size={16} />{/if}
             {item.name}
           </button>
         {/each}
@@ -423,9 +469,36 @@
       <label for="new-db-name">Database name</label>
       <input id="new-db-name" bind:this={newDatabaseDialogInput} bind:value={newDatabaseDialogName} required maxlength="200" disabled={busy} placeholder="e.g. Tasks" />
       {#if newDatabaseDialogError}<p role="alert">{newDatabaseDialogError}</p>{/if}
+      <fieldset class="icon-picker" disabled={busy}>
+        <legend>Icon</legend>
+        <div class="icon-modes">
+          {#each ["Default", "Emoji", "Upload"] as mode}
+            <label><input type="radio" name="database-icon-mode" value={mode} bind:group={iconMode} />{mode}</label>
+          {/each}
+        </div>
+        {#if iconMode === "Emoji"}
+          <div class="emoji-grid" aria-label="Common emojis">
+            {#each emojis as emoji}
+              <button type="button" aria-label={`Choose ${emoji}`} aria-pressed={databaseEmoji === emoji} onclick={() => databaseEmoji = emoji}>{emoji}</button>
+            {/each}
+          </div>
+          <label for="database-emoji">Paste any emoji</label>
+          <input id="database-emoji" bind:value={databaseEmoji} aria-invalid={!!emojiError} aria-describedby={emojiError ? "database-icon-error" : undefined} placeholder="e.g. 🚀" />
+        {:else if iconMode === "Upload"}
+          <label for="database-icon-file">Upload image (PNG, JPEG, WebP; up to 256 KB)</label>
+          <button id="database-icon-file" type="button" class="choose-icon" disabled={readingIcon} onclick={uploadDatabaseIcon} aria-describedby={uploadError ? "database-icon-error" : undefined}>Choose image…</button>
+          {#if readingIcon}<p role="status">Choosing image…</p>{/if}
+          {#if customIcon}<button type="button" class="remove-icon" disabled={readingIcon} onclick={removeUploadedIcon}>Remove image</button>{/if}
+        {/if}
+        {#if iconError}<p id="database-icon-error" role="alert">{iconError}</p>{/if}
+        <div class="icon-preview" aria-label="Icon preview">
+          {#if iconMode === "Upload" && customIcon}<img class="database-icon" src={customIcon} alt="Uploaded database icon preview" />{:else if iconMode === "Emoji" && databaseEmoji.trim() && !emojiError}<span class="database-emoji" aria-hidden="true">{databaseEmoji.trim()}</span>{:else}<Layers size={16} />{/if}
+          <span>{newDatabaseDialogName.trim() || "New database"}</span>
+        </div>
+      </fieldset>
       <div class="new-db-actions">
         <button type="button" disabled={busy} onclick={closeNewDatabaseDialog}>Cancel</button>
-        <button class="primary" disabled={busy || !newDatabaseDialogName.trim()}>{busy ? "Creating…" : "Create"}</button>
+        <button class="primary" disabled={busy || !newDatabaseDialogName.trim() || !!iconError || (iconMode === "Upload" && readingIcon)}>{busy ? "Creating…" : "Create"}</button>
       </div>
     </form>
   </dialog>
@@ -540,11 +613,26 @@
   .caption-row .caption { padding: 0; flex: 1; }
   .new-db-button { color: var(--sub); }
   .new-db-button:hover:not(:disabled) { color: var(--text); }
-  dialog { background: #1c1d21; border: 1px solid var(--line); border-radius: 10px; padding: 24px; width: min(360px, calc(100vw - 48px)); color: var(--text); }
+  dialog { background: #1c1d21; border: 1px solid var(--line); border-radius: 10px; padding: 24px; width: min(360px, calc(100vw - 48px)); max-height: calc(100dvh - 48px); overflow-y: auto; color: var(--text); }
   dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
   dialog h2 { margin: 0 0 20px; font-size: 16px; font-weight: 600; letter-spacing: -0.3px; }
   dialog label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--sub); }
   dialog input { width: 100%; background: #202125; border: 1px solid #3b3c44; border-radius: 6px; padding: 10px 12px; box-sizing: border-box; }
   dialog p[role="alert"] { color: #f1bbc2; font-size: 12px; margin: 6px 0 0; }
+  .icon-picker { border: 0; padding: 0; margin: 20px 0 0; min-width: 0; }
+  .icon-picker legend { font-size: 13px; color: var(--sub); margin-bottom: 6px; }
+  .icon-modes { display: flex; gap: 16px; margin-bottom: 12px; }
+  .icon-modes label { display: flex; align-items: center; gap: 6px; }
+  .icon-modes input { width: auto; margin: 0; accent-color: var(--accent); }
+  .emoji-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; margin-bottom: 12px; }
+  .emoji-grid button { justify-content: center; padding: 5px 0; font-size: 18px; }
+  .emoji-grid button[aria-pressed="true"] { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .choose-icon { background: #292a31; border: 1px solid #42434d; font-size: 12px; }
+  .remove-icon { margin-top: 6px; font-size: 12px; }
+  .icon-preview { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  .icon-preview > span:last-child { overflow-wrap: anywhere; min-width: 0; }
+  .database-icon, .database-emoji { width: 16px; height: 16px; flex-shrink: 0; }
+  .database-icon { border-radius: 3px; object-fit: cover; }
+  .database-emoji { display: inline-flex; align-items: center; justify-content: center; font-size: 16px; line-height: 1; }
   .new-db-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 </style>

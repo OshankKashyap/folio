@@ -21,8 +21,11 @@ export const api = {
   setup(name: string, accentColor: string): Promise<Workspace> {
     return invoke("setup_workspace", { name, accentColor });
   },
-  createDatabase(name: string): Promise<Workspace> {
-    return invoke("create_database", { name });
+  createDatabase(name: string, icon?: { emoji?: string; customIcon?: string }): Promise<Workspace> {
+    return invoke("create_database", { name, ...icon });
+  },
+  pickDatabaseIcon(): Promise<string | null> {
+    return invoke("pick_database_icon");
   },
   setFontFamily(fontFamily: string): Promise<Workspace> {
     return invoke("set_font_family", { fontFamily });

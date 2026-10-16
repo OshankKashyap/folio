@@ -9,6 +9,8 @@ export interface WorkspaceDatabase {
   name: string;
   description: string;
   icon: "layers" | "book" | "idea";
+  emoji: string;
+  customIcon: string | null;
 }
 
 export interface SavedView {
