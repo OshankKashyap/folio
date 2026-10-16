@@ -1,0 +1,76 @@
+# Folio
+
+A local-first database workspace built with Tauri 2, Svelte 5, SvelteKit, TypeScript, and SQLite. The interface follows the supplied Folio design handoff.
+
+## Features
+
+- Retractable sidebar with Projects, Reading list, and Ideas databases
+- Table, status board, and list layouts over the same records
+- Per-database saved views with persistent layout, In progress filter, alphabetical sort, compact rows, and owner visibility
+- Create, edit, and delete records with name, status, priority, due date, and owner
+- Persistent manual row order using drag handles, move buttons, or Up/Down keys while a handle is focused; turn sorting off before reordering
+- Responsive layout, keyboard focus states, and recoverable save errors
+
+## Prerequisites
+
+- Node.js 22.12+ (or a newer supported LTS) and npm
+- Rust stable via rustup
+- [Tauri platform prerequisites](https://tauri.app/start/prerequisites/)
+
+On Debian/Ubuntu, the Linux prerequisites can be installed with:
+
+```sh
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev
+```
+
+## Development
+
+```sh
+npm install
+npm run tauri dev
+```
+
+The workspace requires the Tauri desktop runtime. `npm run dev` serves the frontend for development, but a regular browser does not have access to SQLite and displays a desktop-app notice. There is no browser-storage fallback or remote backend. Icons are bundled locally; no CDN or network connection is required by the workspace.
+
+## Local storage
+
+Rust owns the SQLite connection and exposes specific Tauri commands; the frontend cannot execute arbitrary SQL. Blocking database work runs off the UI thread. Foreign keys, validated properties, versioned migrations, WAL journaling, and transactional row reordering protect the workspace data.
+
+The database file is `folio.sqlite3` in Tauri’s application data directory. On Linux the default is:
+
+```text
+~/.local/share/com.oshank.notionalternative/folio.sqlite3
+```
+
+`XDG_DATA_HOME` overrides the Linux base directory. Each sidebar database is a logical collection in this single SQLite file. The first launch seeds the three databases, their own saved views, and the handoff’s sample records. Later launches never reseed or overwrite edits. Dates are stored as nullable ISO dates (`YYYY-MM-DD`); timestamps use UTC.
+
+To back up the workspace, close Folio first, then copy the database file. Data is local but not encrypted; device access controls still apply.
+
+Custom properties, creating or deleting databases and saved views, advanced filters, board drag-and-drop, sync, authentication, and import/export are not included in this first implementation.
+
+## Checks and builds
+
+```sh
+npm run check
+npm test
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+npm run tauri build
+```
+
+`npm run build` builds only the frontend; `npm run tauri build` builds the desktop app and platform bundles.
+
+Frontend tests exercise database/view switching, view settings, ordering controls, record editing/deletion, and save errors with a mocked Tauri boundary. Rust tests exercise real SQLite, including migrations, CRUD validation, database isolation, ordering, foreign-key cascades, and persistence after reopening a file.
+
+## Project structure
+
+- `src/routes/`: SvelteKit pages and layouts
+- `src/lib/components/`: workspace, record editor, and shared status badges
+- `src/lib/api.ts`: typed Tauri command boundary
+- `static/`: frontend static assets
+- `src-tauri/src/`: Rust commands and application entry points
+- `src-tauri/src/db.rs`: SQLite queries and validation
+- `src-tauri/migrations/`: versioned SQLite schema and first-launch seed data
+- `src-tauri/tauri.conf.json`: app identity, window, build, and bundle settings
+- `src-tauri/capabilities/`: Tauri permission configuration

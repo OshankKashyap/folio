@@ -1,0 +1,41 @@
+export const statuses = ["To do", "In progress", "Done"] as const;
+export const priorities = ["High", "Medium", "Low"] as const;
+export type Status = (typeof statuses)[number];
+export type Priority = (typeof priorities)[number];
+export type Layout = "table" | "board" | "list";
+
+export interface WorkspaceDatabase {
+  id: number;
+  name: string;
+  description: string;
+  icon: "layers" | "book" | "idea";
+}
+
+export interface SavedView {
+  id: number;
+  databaseId: number;
+  name: string;
+  layout: Layout;
+  filterActive: boolean;
+  sortActive: boolean;
+  compact: boolean;
+  showOwner: boolean;
+}
+
+export interface RecordItem {
+  id: number;
+  databaseId: number;
+  name: string;
+  status: Status;
+  priority: Priority;
+  dueDate: string | null;
+  owner: string;
+}
+
+export type RecordInput = Omit<RecordItem, "databaseId">;
+
+export interface Workspace {
+  databases: WorkspaceDatabase[];
+  views: SavedView[];
+  records: RecordItem[];
+}
