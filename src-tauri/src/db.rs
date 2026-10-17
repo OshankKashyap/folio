@@ -49,9 +49,10 @@ impl Database {
         Ok(Self(Arc::new(Mutex::new(connection))))
     }
 
-    pub async fn run<F>(&self, operation: F) -> Result<Workspace, AppError>
+    pub async fn run<T, F>(&self, operation: F) -> Result<T, AppError>
     where
-        F: FnOnce(&mut Connection) -> Result<Workspace, AppError> + Send + 'static,
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, AppError> + Send + 'static,
     {
         let connection = Arc::clone(&self.0);
         tauri::async_runtime::spawn_blocking(move || {
@@ -75,7 +76,7 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 4 {
+    if version > 5 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
@@ -91,6 +92,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 4 {
         transaction.execute_batch(include_str!("../migrations/004_database_icons.sql"))?;
+    }
+    if version < 5 {
+        transaction.execute_batch(include_str!("../migrations/005_record_pages.sql"))?;
     }
     transaction.commit()?;
     Ok(())
@@ -374,6 +378,27 @@ pub fn update_record(
     load(connection)
 }
 
+pub fn get_record_page(connection: &mut Connection, record_id: i64) -> Result<String, AppError> {
+    connection.query_row(
+        "SELECT COALESCE(p.content, '') FROM records r LEFT JOIN record_pages p ON p.record_id = r.id WHERE r.id = ?1",
+        [record_id], |row| row.get(0),
+    ).optional()?.ok_or_else(AppError::missing)
+}
+
+pub fn save_record_page(
+    connection: &mut Connection,
+    record_id: i64,
+    content: &str,
+) -> Result<String, AppError> {
+    if content.len() > 512 * 1024 {
+        return Err(AppError::invalid("Page content must be at most 512 KB."));
+    }
+    connection.query_row(
+        "INSERT INTO record_pages (record_id, content, updated_at) SELECT id, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM records WHERE id = ?1 ON CONFLICT(record_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at RETURNING updated_at",
+        params![record_id, content], |row| row.get(0),
+    ).optional()?.ok_or_else(AppError::missing)
+}
+
 pub fn delete_record(connection: &mut Connection, id: i64) -> Result<Workspace, AppError> {
     if connection.execute("DELETE FROM records WHERE id = ?1", [id])? == 0 {
         return Err(AppError::missing());
@@ -438,6 +463,73 @@ mod tests {
     }
 
     #[test]
+    fn pages_round_trip_upsert_validate_and_cascade() {
+        let mut db = connection();
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "");
+        let timestamp = save_record_page(&mut db, 1, "# Notes\n**hello**").unwrap();
+        assert!(timestamp.ends_with('Z'));
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "# Notes\n**hello**");
+        save_record_page(&mut db, 1, "replacement").unwrap();
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "replacement");
+        assert_eq!(get_record_page(&mut db, 999).unwrap_err().code, "not_found");
+        assert_eq!(
+            save_record_page(&mut db, 999, "missing").unwrap_err().code,
+            "not_found"
+        );
+        let maximum = "é".repeat(256 * 1024);
+        save_record_page(&mut db, 1, &maximum).unwrap();
+        assert_eq!(
+            save_record_page(&mut db, 1, &(maximum.clone() + "x"))
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), maximum);
+        delete_record(&mut db, 1).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM record_pages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn page_migration_is_additive_and_pages_survive_reopening() {
+        let path =
+            std::env::temp_dir().join(format!("folio-pages-test-{}.sqlite", std::process::id()));
+        {
+            let mut db = Connection::open(&path).unwrap();
+            db.execute_batch(include_str!("../migrations/001_workspace.sql"))
+                .unwrap();
+            db.execute_batch(include_str!("../migrations/002_workspace_setup.sql"))
+                .unwrap();
+            db.execute_batch(include_str!("../migrations/003_interface_font.sql"))
+                .unwrap();
+            db.execute_batch(include_str!("../migrations/004_database_icons.sql"))
+                .unwrap();
+            db.execute_batch(include_str!("test_seed.sql")).unwrap();
+            let before = serde_json::to_value(load(&mut db).unwrap()).unwrap();
+            migrate(&mut db).unwrap();
+            assert_eq!(
+                serde_json::to_value(load(&mut db).unwrap()).unwrap(),
+                before
+            );
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                5
+            );
+            save_record_page(&mut db, 1, "Persist me").unwrap();
+        }
+        let mut db = Connection::open(&path).unwrap();
+        migrate(&mut db).unwrap();
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "Persist me");
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn migration_does_not_reseed() {
         let mut db = connection();
         assert_eq!(load(&mut db).unwrap().records.len(), 10);
@@ -465,12 +557,12 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        db.pragma_update(None, "user_version", 5).unwrap();
+        db.pragma_update(None, "user_version", 6).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -727,7 +819,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            4
+            5
         );
         migrate(&mut db).unwrap();
         assert_eq!(snapshot(&db), before);

@@ -8,6 +8,7 @@
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Database from "@lucide/svelte/icons/database";
   import Filter from "@lucide/svelte/icons/filter";
+  import FileText from "@lucide/svelte/icons/file-text";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Layers from "@lucide/svelte/icons/layers";
   import Lightbulb from "@lucide/svelte/icons/lightbulb";
@@ -24,6 +25,7 @@
   import { formatDate, visibleRecords } from "$lib/records";
   import { statuses, type Layout, type RecordInput, type RecordItem, type SavedView, type Workspace } from "$lib/types";
   import RecordEditor from "./RecordEditor.svelte";
+  import RecordPage from "./RecordPage.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import WorkspaceSetup from "./WorkspaceSetup.svelte";
@@ -44,6 +46,12 @@
   let databaseId = $state<number | null>(null);
   let selectedViews = $state<Record<number, number>>({});
   let editing = $state<RecordItem | null>(null);
+  let pageRecordId = $state<number | null>(null);
+  let pagePanel = $state<RecordPage>();
+  let pageTrigger: HTMLButtonElement | undefined;
+  let switchingPage = false;
+  const pageRecord = $derived(workspace.records.find((record) => record.id === pageRecordId));
+  $effect(() => { if (pageRecordId !== null && !pageRecord) pageRecordId = null; });
   let selectedRow = $state<number | null>(null);
   let recordsElement = $state<HTMLDivElement>();
   let settingsButton = $state<HTMLButtonElement>();
@@ -230,6 +238,23 @@
     if (!busy) { error = ""; editing = record; }
   }
 
+  async function openPage(recordId: number, trigger: HTMLButtonElement) {
+    if (switchingPage || pageRecordId === recordId) return;
+    switchingPage = true;
+    if (!pagePanel || await pagePanel.flush()) {
+      pageTrigger = trigger;
+      pageRecordId = recordId;
+    }
+    switchingPage = false;
+  }
+
+  async function closePage(recordId: number) {
+    if (pageRecordId !== recordId) return;
+    pageRecordId = null;
+    await tick();
+    pageTrigger?.focus();
+  }
+
   async function saveRecord(input: RecordInput) {
     if (await mutate(() => api.update(input))) {
       editing = null;
@@ -398,8 +423,8 @@
                         <td class="name-cell"><button class="record-name" disabled={busy} onclick={() => edit(record)}>{record.name}</button></td>
                         <td><StatusBadge status={record.status} /></td>
                         <td class="muted">{record.priority}</td>
-                        <td class="muted"><span title={record.dueDate ?? "No due date"}>{formatDate(record.dueDate)}</span></td>
-                        {#if view.showOwner}<td class="muted">{record.owner || "Unassigned"}</td>{/if}
+                        <td class="muted"><span title={record.dueDate ?? "No due date"}>{formatDate(record.dueDate)}</span>{#if !view.showOwner}<button class="page-button" aria-label="Open page" title="Open page" disabled={busy} onclick={(event) => openPage(record.id, event.currentTarget)}><FileText size={13} />Page</button>{/if}</td>
+                        {#if view.showOwner}<td class="muted">{record.owner || "Unassigned"}<button class="page-button" aria-label="Open page" title="Open page" disabled={busy} onclick={(event) => openPage(record.id, event.currentTarget)}><FileText size={13} />Page</button></td>{/if}
                       </tr>
                     {/each}
                   </tbody>
@@ -441,6 +466,11 @@
         {/if}
       {/if}
     </div>
+    {#if pageRecord}
+      {#key pageRecord.id}
+        <RecordPage bind:this={pagePanel} record={pageRecord} onClose={closePage} />
+      {/key}
+    {/if}
   </main>
 </div>
 {/if}
@@ -521,7 +551,7 @@
   .avatar { background: var(--accent-soft); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; color: var(--accent-text); font-size: 11px; }
   .settings-button { position: absolute; top: 50%; right: 0; transform: translateY(-50%); color: var(--sub); }
   .settings-button:hover:not(:disabled) { color: var(--text); }
-  main { grid-column: 1; grid-row: 1; min-width: 0; }
+  main { position: relative; grid-column: 1; grid-row: 1; min-width: 0; }
   .sidebar-open > main { grid-column: 2; }
   .chrome { min-height: 56px; border-bottom: 1px solid var(--line); padding: 0 22px; display: flex; align-items: center; gap: 12px; color: var(--sub); font-size: 12px; }
   .path { flex: 1; font-weight: 500; }
@@ -545,6 +575,9 @@
   td { padding: 13px 12px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
   td:first-child { border-left: 1px solid var(--line); }
   tr:hover td { background: #202126; }
+  td:last-child { position: relative; }
+  .page-button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); opacity: 0; pointer-events: none; background: #292a31; padding: 4px 6px; font-size: 11px; }
+  tr:hover .page-button, tr:focus-within .page-button { opacity: 1; pointer-events: auto; }
   .name-cell { min-width: 210px; width: 35%; }
   button.record-name { padding: 0; border-radius: 2px; color: #e8e8ec; }
   button.record-name:hover:not(:disabled) { background: none; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }

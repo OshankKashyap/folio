@@ -76,7 +76,7 @@
 </dialog>
 
 <style>
-  dialog { width: min(800px, calc(100vw - 48px)); height: min(520px, calc(100dvh - var(--titlebar-height) - 48px)); max-height: calc(100dvh - var(--titlebar-height) - 48px); padding: 26px; color: var(--text); background: #202125; border: 1px solid #383941; border-radius: 12px; box-shadow: 0 24px 80px #0005; overflow: auto; }
+  dialog { width: min(800px, calc(100vw - 48px)); height: min(520px, calc(100dvh - var(--titlebar-height) - 48px)); max-height: calc(100dvh - var(--titlebar-height) - 48px); padding: 26px; color: var(--text); background: #202125; border: 1px solid #383941; border-radius: 12px; outline: none; box-shadow: 0 24px 80px #0005; overflow: auto; }
   dialog::backdrop { background: #08090bb8; }
   dialog[open] { display: flex; flex-direction: column; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }

@@ -7,10 +7,23 @@ import type { Workspace as WorkspaceData } from "$lib/types";
 import Workspace from "./Workspace.svelte";
 import settingsSource from "./SettingsPanel.svelte?raw";
 import workspaceSource from "./Workspace.svelte?raw";
+import pageSource from "./RecordPage.svelte?raw";
+import { createEditor } from "$lib/editor";
+
+vi.mock("$lib/editor", () => ({
+  createEditor: vi.fn((parent: HTMLElement, content: string, onChange: (value: string) => void) => {
+    const input = document.createElement("textarea");
+    input.setAttribute("aria-label", "Page notes");
+    input.value = content;
+    input.oninput = () => onChange(input.value);
+    parent.append(input);
+    return { destroy: vi.fn(() => input.remove()), getValue: () => input.value, setContent: (value: string) => { input.value = value; }, focus: () => input.focus(), action: vi.fn() };
+  }),
+}));
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
 });
 
 let data: WorkspaceData;
@@ -21,6 +34,8 @@ beforeEach(() => {
   data = fixture();
   vi.mocked(api.load).mockImplementation(async () => structuredClone(data));
   vi.mocked(api.pickDatabaseIcon).mockResolvedValue(null);
+  vi.mocked(api.getRecordPage).mockResolvedValue("# Notes");
+  vi.mocked(api.saveRecordPage).mockResolvedValue("2026-10-17T12:00:00.000Z");
   document.documentElement.style.removeProperty("--app-font");
   vi.mocked(api.getDefaultFont).mockResolvedValue("Noto Sans Display");
   vi.mocked(api.checkFontAvailable).mockImplementation(async (font) => font === "Installed Font");
@@ -34,7 +49,7 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 async function openWorkspace() {
   const user = userEvent.setup();
@@ -44,6 +59,172 @@ async function openWorkspace() {
 }
 
 describe("Folio workspace", () => {
+  it("opens pages with keyboard focus, without adding in-flow row geometry", async () => {
+    const user = await openWorkspace();
+    const trigger = screen.getAllByRole("button", { name: "Open page" })[0];
+    expect(trigger.tagName).toBe("BUTTON");
+    expect(workspaceSource).toContain("tr:hover .page-button, tr:focus-within .page-button");
+    expect(workspaceSource.split(".page-button {")[1].split("}")[0]).toContain("position: absolute");
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    const panel = await screen.findByRole("region", { name: "Record page" });
+    expect(within(panel).getByRole("heading", { name: "Network monitor" })).toBeTruthy();
+    const notes = await screen.findByLabelText("Page notes");
+    expect(notes).toHaveProperty("value", "# Notes");
+    expect(document.activeElement).toBe(notes);
+    expect(api.getRecordPage).toHaveBeenCalledWith(1);
+    expect(api.load).toHaveBeenCalledTimes(1);
+  });
+
+  it("debounces notes and displays Saving then Saved", async () => {
+    await openWorkspace();
+    await fireEvent.click(screen.getAllByRole("button", { name: "Open page" })[0]);
+    const input = await screen.findByLabelText("Page notes");
+    let finish!: (value: string) => void;
+    vi.mocked(api.saveRecordPage).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    vi.useFakeTimers();
+    await fireEvent.input(input, { target: { value: "First" } });
+    await vi.advanceTimersByTimeAsync(400);
+    await fireEvent.input(input, { target: { value: "Latest" } });
+    await vi.advanceTimersByTimeAsync(599);
+    expect(api.saveRecordPage).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.saveRecordPage).toHaveBeenCalledExactlyOnceWith(1, "Latest");
+    expect(screen.getByText("Saving…")).toBeTruthy();
+    finish("timestamp");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByText("Saved", { exact: true })).toBeTruthy();
+  });
+
+  it("flushes on close and returns focus to the Page trigger", async () => {
+    await openWorkspace();
+    const trigger = screen.getAllByRole("button", { name: "Open page" })[0];
+    await fireEvent.click(trigger);
+    await fireEvent.input(await screen.findByLabelText("Page notes"), { target: { value: "Flush me" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Close page" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Record page" })).toBeNull());
+    expect(api.saveRecordPage).toHaveBeenCalledWith(1, "Flush me");
+    expect(document.activeElement).toBe(trigger);
+    expect(vi.mocked(createEditor).mock.results[0].value.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("expands, collapses, keeps both controls and leaves Escape to the editor", async () => {
+    const user = await openWorkspace();
+    await fireEvent.click(screen.getAllByRole("button", { name: "Open page" })[0]);
+    await screen.findByLabelText("Page notes");
+    const panel = screen.getByRole("region", { name: "Record page" });
+    await fireEvent.click(screen.getByRole("button", { name: "Expand page" }));
+    expect(panel.classList.contains("expanded")).toBe(true);
+    expect(screen.getByRole("button", { name: "Close page" })).toBeTruthy();
+    expect(pageSource).toContain("position: fixed; inset: var(--titlebar-height) 0 0; width: 100%");
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("region", { name: "Record page" })).toBe(panel);
+    await fireEvent.click(screen.getByRole("button", { name: "Collapse page" }));
+    expect(panel.classList.contains("expanded")).toBe(false);
+  });
+
+  it("keeps failed drafts open on close and retries without losing content", async () => {
+    await openWorkspace();
+    await fireEvent.click(screen.getAllByRole("button", { name: "Open page" })[0]);
+    const input = await screen.findByLabelText("Page notes");
+    vi.mocked(api.saveRecordPage).mockRejectedValueOnce({ message: "Could not save page." });
+    await fireEvent.input(input, { target: { value: "Keep this draft" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Close page" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save page.");
+    expect(input).toHaveProperty("value", "Keep this draft");
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("Saved", { exact: true });
+    expect(api.saveRecordPage).toHaveBeenLastCalledWith(1, "Keep this draft");
+  });
+
+  it("flushes before switching, destroys the old editor and resets content and dirty state", async () => {
+    await openWorkspace();
+    const triggers = screen.getAllByRole("button", { name: "Open page" });
+    await fireEvent.click(triggers[0]);
+    await fireEvent.input(await screen.findByLabelText("Page notes"), { target: { value: "First record draft" } });
+    vi.mocked(api.getRecordPage).mockResolvedValueOnce("Second record notes");
+    await fireEvent.click(triggers[1]);
+    await waitFor(() => expect(screen.getByLabelText("Page notes")).toHaveProperty("value", "Second record notes"));
+    expect(api.saveRecordPage).toHaveBeenCalledExactlyOnceWith(1, "First record draft");
+    expect(api.getRecordPage).toHaveBeenLastCalledWith(2);
+    expect(screen.getByText("Saved", { exact: true })).toBeTruthy();
+    expect(vi.mocked(createEditor).mock.results[0].value.destroy).toHaveBeenCalledOnce();
+    await fireEvent.click(screen.getByRole("button", { name: "Close page" }));
+    expect(api.saveRecordPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks switching when the old draft cannot be saved", async () => {
+    await openWorkspace();
+    const triggers = screen.getAllByRole("button", { name: "Open page" });
+    await fireEvent.click(triggers[0]);
+    await fireEvent.input(await screen.findByLabelText("Page notes"), { target: { value: "Unsaved first" } });
+    vi.mocked(api.saveRecordPage).mockRejectedValue({ message: "Try again." });
+    await fireEvent.click(triggers[1]);
+    await screen.findByRole("alert");
+    expect(api.getRecordPage).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Page notes")).toHaveProperty("value", "Unsaved first");
+  });
+
+  it("serializes a slow save and flushes edits made while closing", async () => {
+    await openWorkspace();
+    await fireEvent.click(screen.getAllByRole("button", { name: "Open page" })[0]);
+    const input = await screen.findByLabelText("Page notes");
+    let finish!: (value: string) => void;
+    vi.mocked(api.saveRecordPage).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    vi.useFakeTimers();
+    await fireEvent.input(input, { target: { value: "First save" } });
+    await vi.advanceTimersByTimeAsync(600);
+    await fireEvent.input(input, { target: { value: "Latest during save" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Close page" }));
+    expect(api.saveRecordPage).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Page notes")).toBe(input);
+    finish("timestamp");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.saveRecordPage).toHaveBeenLastCalledWith(1, "Latest during save");
+    expect(screen.queryByRole("region", { name: "Record page" })).toBeNull();
+  });
+
+  it("ignores an old page load after switching records", async () => {
+    await openWorkspace();
+    let finish!: (value: string) => void;
+    vi.mocked(api.getRecordPage).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const triggers = screen.getAllByRole("button", { name: "Open page" });
+    await fireEvent.click(triggers[0]);
+    vi.mocked(api.getRecordPage).mockResolvedValueOnce("Second page");
+    await fireEvent.click(triggers[1]);
+    expect(await screen.findByLabelText("Page notes")).toHaveProperty("value", "Second page");
+    finish("Stale first page");
+    await waitFor(() => expect(createEditor).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText("Page notes")).toHaveProperty("value", "Second page");
+  });
+
+  it("closes and destroys the page when its record is deleted", async () => {
+    const user = await openWorkspace();
+    await fireEvent.click(screen.getAllByRole("button", { name: "Open page" })[0]);
+    await screen.findByLabelText("Page notes");
+    vi.mocked(api.remove).mockResolvedValue({ ...data, records: data.records.filter((record) => record.id !== 1) });
+    await user.click(screen.getByRole("button", { name: "Network monitor" }));
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await user.click(within(dialog).getByRole("button", { name: "Delete record" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Record page" })).toBeNull());
+    expect(vi.mocked(createEditor).mock.results[0].value.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("retries page loading and routes all toolbar actions through the editor boundary", async () => {
+    await openWorkspace();
+    vi.mocked(api.getRecordPage).mockRejectedValueOnce({ message: "Could not load notes." });
+    await fireEvent.click(screen.getAllByRole("button", { name: "Open page" })[0]);
+    await screen.findByRole("alert");
+    expect(screen.queryByLabelText("Page notes")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByLabelText("Page notes");
+    for (const action of ["Bold", "Italic", "Heading", "Bullet list", "Numbered list", "Quote", "Inline code", "Code block", "Link"]) {
+      await fireEvent.click(screen.getByRole("button", { name: action }));
+      expect(vi.mocked(createEditor).mock.results[0].value.action).toHaveBeenLastCalledWith(action);
+    }
+  });
+
   it("uses medium weight for table text, breadcrumbs, and workspace details without changing heading weight", () => {
     for (const selector of [".side-bottom", ".path", "table", "th"]) {
       const rule = workspaceSource.split(`${selector} {`)[1].split("}")[0];
@@ -435,6 +616,7 @@ describe("Folio workspace", () => {
   });
 
   it("uses viewport sizing and a scrolling settings body", () => {
+    expect(settingsSource).toMatch(/dialog\s*\{[^}]*outline: none/);
     expect(settingsSource).toContain("width: min(800px, calc(100vw - 48px))");
     expect(settingsSource).toContain("height: min(520px, calc(100dvh - var(--titlebar-height) - 48px))");
     expect(settingsSource).toContain("max-height: calc(100dvh - var(--titlebar-height) - 48px)");

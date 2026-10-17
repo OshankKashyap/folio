@@ -93,6 +93,27 @@ async fn update_record(
 }
 
 #[tauri::command]
+async fn get_record_page(
+    database: State<'_, Database>,
+    record_id: i64,
+) -> Result<String, AppError> {
+    database
+        .run(move |connection| db::get_record_page(connection, record_id))
+        .await
+}
+
+#[tauri::command]
+async fn save_record_page(
+    database: State<'_, Database>,
+    record_id: i64,
+    content: String,
+) -> Result<String, AppError> {
+    database
+        .run(move |connection| db::save_record_page(connection, record_id, &content))
+        .await
+}
+
+#[tauri::command]
 async fn delete_record(database: State<'_, Database>, id: i64) -> Result<Workspace, AppError> {
     database
         .run(move |connection| db::delete_record(connection, id))
@@ -170,6 +191,8 @@ pub fn run() {
             create_record,
             update_record,
             delete_record,
+            get_record_page,
+            save_record_page,
             update_view,
             reorder_record,
             get_window_button_layout

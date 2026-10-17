@@ -36,6 +36,9 @@ export interface RecordItem {
 
 export type RecordInput = Omit<RecordItem, "databaseId">;
 
+export type RecordPageContent = string;
+export type RecordPageUpdatedAt = string;
+
 export interface Workspace {
   settings: { name: string; accentColor: string; fontFamily: string } | null;
   databases: WorkspaceDatabase[];

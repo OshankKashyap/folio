@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { RecordInput, SavedView, Status, WindowButtonLayout, Workspace } from "./types";
+import type { RecordInput, RecordPageContent, RecordPageUpdatedAt, SavedView, Status, WindowButtonLayout, Workspace } from "./types";
 
 export function errorMessage(error: unknown): string {
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
@@ -41,6 +41,12 @@ export const api = {
   },
   remove(id: number): Promise<Workspace> {
     return invoke("delete_record", { id });
+  },
+  getRecordPage(recordId: number): Promise<RecordPageContent> {
+    return invoke("get_record_page", { recordId });
+  },
+  saveRecordPage(recordId: number, content: RecordPageContent): Promise<RecordPageUpdatedAt> {
+    return invoke("save_record_page", { recordId, content });
   },
   saveView(view: SavedView): Promise<Workspace> {
     return invoke("update_view", { view });
