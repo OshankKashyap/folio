@@ -23,7 +23,7 @@
   import X from "@lucide/svelte/icons/x";
   import { api, errorMessage } from "$lib/api";
   import { formatDate, visibleRecords } from "$lib/records";
-  import { statuses, type Layout, type RecordInput, type RecordItem, type SavedView, type Workspace } from "$lib/types";
+  import { statuses, type Layout, type RecordInput, type RecordItem, type SavedView, type WindowButtonOverride, type Workspace } from "$lib/types";
   import RecordEditor from "./RecordEditor.svelte";
   import RecordPage from "./RecordPage.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
@@ -31,6 +31,7 @@
   import WorkspaceSetup from "./WorkspaceSetup.svelte";
   import { accentInk } from "$lib/theme";
   import { applyFont, checkFontAvailable } from "$lib/fonts";
+  import { uiState } from "$lib/uiState.svelte";
 
   let workspace = $state<Workspace>({ settings: null, databases: [], views: [], records: [] });
   let loading = $state(true);
@@ -100,6 +101,7 @@
   async function load() {
     if (busy) return;
     loading = true;
+    uiState.windowButtonLayout = null;
     loadFailed = false;
     error = "";
     try {
@@ -113,6 +115,7 @@
       loadFailed = true;
       error = errorMessage(cause);
     } finally {
+      uiState.windowButtonLayout = workspace.settings?.windowButtonLayout ?? "";
       loading = false;
     }
   }
@@ -152,6 +155,12 @@
         error = errorMessage(cause);
       }
     });
+  }
+
+  async function saveWindowButtonLayout(layout: WindowButtonOverride): Promise<boolean> {
+    const saved = await mutate(() => api.setWindowButtonLayout(layout));
+    if (saved) uiState.windowButtonLayout = workspace.settings?.windowButtonLayout ?? "";
+    return saved;
   }
 
   function resizeSidebar(width: number) {
@@ -555,7 +564,7 @@
 {/if}
 
 {#if preferencesOpen}
-  <SettingsPanel {fontFamily} {busy} {error} onSave={saveFont} onClose={closePreferences} />
+  <SettingsPanel {fontFamily} windowButtonLayout={workspace.settings?.windowButtonLayout ?? ""} {busy} {error} onSave={saveFont} onSaveWindowButtonLayout={saveWindowButtonLayout} onClose={closePreferences} />
 {/if}
 
 {#if newDatabaseOpen}

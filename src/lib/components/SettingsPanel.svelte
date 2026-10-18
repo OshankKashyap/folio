@@ -3,12 +3,15 @@
   import X from "@lucide/svelte/icons/x";
   import { applyFont, checkFontAvailable } from "$lib/fonts";
   import { api } from "$lib/api";
+  import type { WindowButtonOverride } from "$lib/types";
 
-  let { fontFamily, busy, error, onSave, onClose }: {
+  let { fontFamily, windowButtonLayout, busy, error, onSave, onSaveWindowButtonLayout, onClose }: {
     fontFamily: string;
+    windowButtonLayout: WindowButtonOverride;
     busy: boolean;
     error: string;
     onSave: (font: string) => Promise<boolean>;
+    onSaveWindowButtonLayout: (layout: WindowButtonOverride) => Promise<boolean>;
     onClose: () => void;
   } = $props();
 
@@ -17,6 +20,8 @@
   let font = $state(untrack(() => fontFamily));
   let notFound = $state(false);
   let defaultFont = $state("");
+  let buttonLayout = $state(untrack(() => windowButtonLayout));
+  let detectedSide = $state("");
   let category = $state("interface");
   let timer: ReturnType<typeof setTimeout>;
   let revision = 0;
@@ -25,6 +30,9 @@
   onMount(() => {
     dialog.showModal(); closeButton.focus();
     void api.getDefaultFont().then((family) => { if (active) defaultFont = family; }).catch(() => {});
+    void api.getWindowButtonLayout().then((layout) => {
+      if (active) detectedSide = layout.left.length ? "Left" : layout.right.length ? "Right" : "";
+    }).catch(() => {});
     return () => { active = false; clearTimeout(timer); };
   });
 
@@ -51,6 +59,11 @@
     font = "";
     void updateFont();
   }
+
+  async function updateWindowButtonLayout(layout: WindowButtonOverride) {
+    buttonLayout = layout;
+    if (!await onSaveWindowButtonLayout(layout)) buttonLayout = windowButtonLayout;
+  }
 </script>
 
 <dialog bind:this={dialog} aria-labelledby="settings-heading" oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={(event) => { if (event.target === dialog) onClose(); }}>
@@ -70,6 +83,12 @@
       </div>
       <p id="font-hint" aria-live="polite">{notFound ? "Font not found on this system — using default." : ""}</p>
       <button type="button" disabled={busy} onclick={resetFont}>Reset to default</button>
+      <fieldset class="window-buttons" disabled={busy}>
+        <legend><h3>Window buttons</h3></legend>
+        {#each ["", "left", "right"] as value}
+          <label><input type="radio" name="window-buttons" value={value} checked={buttonLayout === value} onchange={() => { void updateWindowButtonLayout(value as WindowButtonOverride); }} />{value === "" ? detectedSide ? `Auto (currently ${detectedSide})` : "Auto" : value === "left" ? "Left" : "Right"}</label>
+        {/each}
+      </fieldset>
       {#if error}<p class="save-error" role="alert">{error}</p>{/if}
     </section>
   </div>
@@ -88,11 +107,15 @@
   section { min-width: 0; }
   h3 { margin: 0 0 18px; font-size: 15px; font-weight: 600; }
   .font-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 12px; }
-  label { font-size: 12px; color: #bcbec8; min-width: 0; }
+  label { font-size: 14px; font-weight: 400; color: #bcbec8; min-width: 0; }
   input { width: 100%; background: #18191c; border: 1px solid #3b3c44; border-radius: 6px; padding: 9px 10px; color: var(--text); min-width: 0; }
   p { margin: 8px 0; color: var(--sub); font-size: 12px; }
   p:empty { display: none; }
   .save-error { color: #f1bbc2; }
+  .window-buttons { border: 0; padding: 0; margin: 24px 0 0; min-width: 0; }
+  .window-buttons legend { padding: 0; }
+  .window-buttons label { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .window-buttons input { width: auto; margin: 0; flex-shrink: 0; }
   @media (max-width: 480px) {
     dialog { padding: 18px; }
     .body { grid-template-columns: 88px minmax(0, 1fr); gap: 12px; }

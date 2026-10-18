@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { RecordInput, RecordPageContent, RecordPageUpdatedAt, SavedView, Status, WindowButtonLayout, Workspace } from "./types";
+import type { RecordInput, RecordPageContent, RecordPageUpdatedAt, SavedView, Status, WindowButtonLayout, WindowButtonOverride, Workspace } from "./types";
 
 export function errorMessage(error: unknown): string {
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
@@ -32,6 +32,9 @@ export const api = {
   },
   setSidebarWidth(sidebarWidth: number | null): Promise<Workspace> {
     return invoke("set_sidebar_width", { sidebarWidth });
+  },
+  setWindowButtonLayout(windowButtonLayout: WindowButtonOverride): Promise<Workspace> {
+    return invoke("set_window_button_layout", { windowButtonLayout });
   },
   getDefaultFont(): Promise<string> {
     return invoke("get_default_font");

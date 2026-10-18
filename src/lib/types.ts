@@ -40,13 +40,14 @@ export type RecordPageContent = string;
 export type RecordPageUpdatedAt = string;
 
 export interface Workspace {
-  settings: { name: string; accentColor: string; fontFamily: string; sidebarWidth: number | null } | null;
+  settings: { name: string; accentColor: string; fontFamily: string; sidebarWidth: number | null; windowButtonLayout: WindowButtonOverride } | null;
   databases: WorkspaceDatabase[];
   views: SavedView[];
   records: RecordItem[];
 }
 
 export type WindowButton = "close" | "maximize" | "minimize";
+export type WindowButtonOverride = "" | "left" | "right";
 
 export interface WindowButtonLayout {
   left: WindowButton[];

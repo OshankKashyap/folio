@@ -8,8 +8,15 @@
   import X from "@lucide/svelte/icons/x";
   import { api } from "$lib/api";
   import type { WindowButton, WindowButtonLayout } from "$lib/types";
+  import { uiState } from "$lib/uiState.svelte";
 
-  let layout = $state<WindowButtonLayout>({ left: [], right: ["minimize", "maximize", "close"] });
+  let detectedLayout = $state<WindowButtonLayout>({ left: [], right: ["minimize", "maximize", "close"] });
+  let detectionReady = $state(false);
+  const layout = $derived<WindowButtonLayout>(uiState.windowButtonLayout === "left"
+    ? { left: ["close", "minimize", "maximize"], right: [] }
+    : uiState.windowButtonLayout === "right"
+      ? { left: [], right: ["minimize", "maximize", "close"] }
+      : detectedLayout);
   let maximized = $state(false);
   const appWindow = isTauri() ? getCurrentWindow() : null;
 
@@ -17,11 +24,12 @@
     void api
       .getWindowButtonLayout()
       .then((detected) => {
-        layout = detected;
+        detectedLayout = detected;
       })
       .catch(() => {
         // Detection failed; keep the default right-side layout.
-      });
+      })
+      .finally(() => { detectionReady = true; });
     if (!appWindow) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
@@ -45,7 +53,7 @@
 </script>
 
 <!-- The drag attribute is "deep" so the empty space between the button groups drags too. -->
-<header class="titlebar" data-tauri-drag-region="deep">
+<header class="titlebar" data-tauri-drag-region="deep" style:visibility={uiState.windowButtonLayout === null || !detectionReady ? "hidden" : undefined}>
   {#each layout.left as button (button)}
     {@render windowControl(button)}
   {/each}

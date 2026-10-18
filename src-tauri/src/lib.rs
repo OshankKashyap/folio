@@ -45,6 +45,16 @@ async fn set_sidebar_width(
 }
 
 #[tauri::command]
+async fn set_window_button_layout(
+    database: State<'_, Database>,
+    window_button_layout: String,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| db::set_window_button_layout(connection, &window_button_layout))
+        .await
+}
+
+#[tauri::command]
 async fn create_database(
     database: State<'_, Database>,
     name: String,
@@ -195,6 +205,7 @@ pub fn run() {
             setup_workspace,
             set_font_family,
             set_sidebar_width,
+            set_window_button_layout,
             get_default_font,
             check_font_available,
             create_database,

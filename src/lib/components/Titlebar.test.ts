@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { api } from "$lib/api";
 import Titlebar from "./Titlebar.svelte";
+import { uiState } from "$lib/uiState.svelte";
 
 const { windowApi } = vi.hoisted(() => ({
   windowApi: {
@@ -32,12 +33,25 @@ function buttonLabels() {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  uiState.windowButtonLayout = "";
   windowApi.isMaximized.mockResolvedValue(false);
   windowApi.onResized.mockImplementation(async () => () => {});
   vi.mocked(api.getWindowButtonLayout).mockResolvedValue({ left: [], right: ["minimize", "maximize", "close"] });
 });
 
 describe("Folio titlebar", () => {
+  it("waits for detection before revealing Auto without flashing the fallback side", async () => {
+    let finishDetection!: (layout: Awaited<ReturnType<typeof api.getWindowButtonLayout>>) => void;
+    vi.mocked(api.getWindowButtonLayout).mockImplementationOnce(() => new Promise((resolve) => { finishDetection = resolve; }));
+    const mounted = render(Titlebar);
+    const header = mounted.container.querySelector("header")!;
+    expect(header.style.visibility).toBe("hidden");
+    finishDetection({ left: ["close", "maximize", "minimize"], right: [] });
+    await screen.findByRole("button", { name: "Close" });
+    expect(header.style.visibility).not.toBe("hidden");
+    expect(buttonLabels()).toEqual(["Close", "Maximize", "Minimize"]);
+  });
+
   it("renders the detected buttons on the correct side in order", async () => {
     vi.mocked(api.getWindowButtonLayout).mockResolvedValue({ left: ["close", "maximize", "minimize"], right: [] });
     render(Titlebar);

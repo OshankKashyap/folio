@@ -5,6 +5,8 @@ import { api } from "$lib/api";
 import { fixture } from "$lib/test-fixture";
 import type { Workspace as WorkspaceData } from "$lib/types";
 import Workspace from "./Workspace.svelte";
+import Titlebar from "./Titlebar.svelte";
+import { uiState } from "$lib/uiState.svelte";
 import settingsSource from "./SettingsPanel.svelte?raw";
 import workspaceSource from "./Workspace.svelte?raw";
 import pageSource from "./RecordPage.svelte?raw";
@@ -23,7 +25,7 @@ vi.mock("$lib/editor", () => ({
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
 });
 
 let data: WorkspaceData;
@@ -32,6 +34,12 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   data = fixture();
+  uiState.windowButtonLayout = null;
+  vi.mocked(api.getWindowButtonLayout).mockResolvedValue({ left: ["close", "maximize", "minimize"], right: [] });
+  vi.mocked(api.setWindowButtonLayout).mockImplementation(async (windowButtonLayout) => {
+    data.settings!.windowButtonLayout = windowButtonLayout;
+    return structuredClone(data);
+  });
   vi.mocked(api.load).mockImplementation(async () => structuredClone(data));
   vi.mocked(api.pickDatabaseIcon).mockResolvedValue(null);
   vi.mocked(api.getRecordPage).mockResolvedValue("# Notes");
@@ -392,7 +400,7 @@ describe("Folio workspace", () => {
 
   it.each([["Teal", "#5ecfca"], ["Amber", "#f5cd6f"]])("saves the %s accent preset", async (label, accentColor) => {
     data = { settings: null, databases: [], views: [], records: [] };
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "", sidebarWidth: null } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "" } });
     const user = userEvent.setup();
     render(Workspace);
     await user.type(await screen.findByLabelText("Workspace name"), "Home");
@@ -405,7 +413,7 @@ describe("Folio workspace", () => {
   it("sets up an empty workspace and creates its first database without sample records", async () => {
     data = { settings: null, databases: [], views: [], records: [] };
     vi.mocked(api.setup).mockImplementation(async (name, accentColor) => {
-      data.settings = { name, accentColor, fontFamily: "", sidebarWidth: null };
+      data.settings = { name, accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "" };
       return structuredClone(data);
     });
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
@@ -446,14 +454,14 @@ describe("Folio workspace", () => {
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save workspace.");
     expect(name).toHaveProperty("value", "Home");
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "", sidebarWidth: null } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "", sidebarWidth: null, windowButtonLayout: "" } });
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     await screen.findByRole("heading", { name: "Welcome to Home" });
     expect(api.setup).toHaveBeenLastCalledWith("Home", "#123456");
   });
 
   it("shows database creation errors without leaving the empty workspace", async () => {
-    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null }, databases: [], views: [], records: [] };
+    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "" }, databases: [], views: [], records: [] };
     vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
     const user = userEvent.setup();
     render(Workspace);
@@ -597,6 +605,88 @@ describe("Folio workspace", () => {
     expect(within(dialog).getByLabelText("Font").parentElement).toBe(within(dialog).getByText("Font", { selector: "label" }).parentElement);
     expect(within(dialog).queryByText("Auto — Noto Sans Display")).toBeNull();
     expect(dialog.querySelector("#font-hint")?.textContent).toBe("");
+  });
+
+  it("saves window button overrides live and restores the cached detected order in Auto", async () => {
+    const mounted = render(Titlebar);
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const group = within(screen.getByRole("group", { name: "Window buttons" }));
+    expect(group.getByRole("heading", { name: "Window buttons", level: 3 })).toBeTruthy();
+    expect(group.getAllByRole("radio")).toHaveLength(3);
+    expect(await group.findByRole("radio", { name: "Auto (currently Left)" })).toHaveProperty("checked", true);
+    const titlebar = within(mounted.container).getByRole("banner");
+    const labels = () => within(titlebar).getAllByRole("button").map((button) => button.getAttribute("aria-label"));
+    for (const [name, value, order] of [
+      ["Left", "left", ["Close", "Minimize", "Maximize"]],
+      ["Right", "right", ["Minimize", "Maximize", "Close"]],
+      ["Auto (currently Left)", "", ["Close", "Maximize", "Minimize"]],
+    ] as const) {
+      await user.click(group.getByRole("radio", { name }));
+      await waitFor(() => expect(api.setWindowButtonLayout).toHaveBeenLastCalledWith(value));
+      await waitFor(() => expect(labels()).toEqual(order));
+      const spacer = titlebar.querySelector(".spacer")!;
+      expect(value === "right" ? spacer.previousElementSibling : spacer.nextElementSibling).toBeNull();
+    }
+    expect(api.getWindowButtonLayout).toHaveBeenCalledTimes(2); // Titlebar mount and panel label only.
+  });
+
+  it("reverts failed window button saves to the persisted value and supports keyboard selection", async () => {
+    data.settings!.windowButtonLayout = "left";
+    vi.mocked(api.setWindowButtonLayout).mockRejectedValueOnce({ message: "Could not save window buttons." });
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const dialog = within(screen.getByRole("dialog"));
+    dialog.getByRole("radio", { name: "Left" }).focus();
+    await user.keyboard("{ArrowRight}");
+    expect(await dialog.findByRole("alert")).toHaveProperty("textContent", "Could not save window buttons.");
+    expect(dialog.getByRole("radio", { name: "Left" })).toHaveProperty("checked", true);
+    expect(dialog.getByRole("radio", { name: "Right" })).toHaveProperty("checked", false);
+    expect(uiState.windowButtonLayout).toBe("left");
+  });
+
+  it("silently uses a plain Auto label when window layout detection fails", async () => {
+    vi.mocked(api.getWindowButtonLayout).mockRejectedValue(new Error("unavailable"));
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("radio", { name: "Auto" })).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
+  });
+
+  it("labels right-side detection and disables choices while saving", async () => {
+    vi.mocked(api.getWindowButtonLayout).mockResolvedValue({ left: [], right: ["minimize", "maximize", "close"] });
+    let finishSave!: (value: WorkspaceData) => void;
+    vi.mocked(api.setWindowButtonLayout).mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const group = screen.getByRole("group", { name: "Window buttons" }) as HTMLFieldSetElement;
+    expect(await within(group).findByRole("radio", { name: "Auto (currently Right)" })).toHaveProperty("checked", true);
+    await user.click(within(group).getByRole("radio", { name: "Left" }));
+    expect(group.disabled).toBe(true);
+    data.settings!.windowButtonLayout = "left";
+    finishSave(structuredClone(data));
+    await waitFor(() => expect(group.disabled).toBe(false));
+    expect(uiState.windowButtonLayout).toBe("left");
+  });
+
+  it.each(["left", "right"] as const)("loads saved %s window buttons before revealing the titlebar and restores them on remount", async (side) => {
+    data.settings!.windowButtonLayout = side;
+    let finishLoad!: (value: WorkspaceData) => void;
+    vi.mocked(api.load).mockImplementationOnce(() => new Promise((resolve) => { finishLoad = resolve; }));
+    const titlebar = render(Titlebar);
+    const workspace = render(Workspace);
+    const header = titlebar.container.querySelector("header")!;
+    expect(header.style.visibility).toBe("hidden");
+    finishLoad(structuredClone(data));
+    await screen.findByRole("heading", { name: "Projects" });
+    await waitFor(() => expect(header.style.visibility).not.toBe("hidden"));
+    expect(header.firstElementChild?.getAttribute("aria-label")).toBe(side === "left" ? "Close" : null);
+    workspace.unmount();
+    titlebar.unmount();
+    render(Workspace);
+    render(Titlebar);
+    await screen.findByRole("heading", { name: "Projects" });
+    expect(uiState.windowButtonLayout).toBe(side);
   });
 
   it("debounces live font preview, persists available fonts, and resets to Auto", async () => {
@@ -767,6 +857,8 @@ describe("Folio workspace", () => {
     expect(settingsSource).toMatch(/nav button\s*\{[^}]*font-size: 14px/);
     expect(settingsSource).toMatch(/nav button\[aria-current="page"\]\s*\{[^}]*font-weight: 700/);
     expect(settingsSource).toMatch(/\.font-row\s*\{[^}]*grid-template-columns: 64px minmax\(0, 1fr\)/);
+    expect(settingsSource).toMatch(/h3\s*\{[^}]*font-size: 15px;[^}]*font-weight: 600/);
+    expect(settingsSource).toMatch(/\n  label\s*\{[^}]*font-size: 14px;[^}]*font-weight: 400/);
   });
 
   it("closes the settings panel from its close button and returns focus to the sidebar control", async () => {

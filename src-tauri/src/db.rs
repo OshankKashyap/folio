@@ -76,7 +76,7 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 6 {
+    if version > 7 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
@@ -98,6 +98,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 6 {
         transaction.execute_batch(include_str!("../migrations/006_sidebar_width.sql"))?;
+    }
+    if version < 7 {
+        transaction.execute_batch(include_str!("../migrations/007_window_button_layout.sql"))?;
     }
     transaction.commit()?;
     Ok(())
@@ -157,6 +160,7 @@ pub struct WorkspaceSettings {
     accent_color: String,
     font_family: String,
     sidebar_width: Option<i64>,
+    window_button_layout: String,
 }
 
 #[derive(Serialize)]
@@ -170,7 +174,7 @@ pub struct Workspace {
 pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
     let settings = connection
         .query_row(
-            "SELECT name, accent_color, font_family, sidebar_width FROM workspace_settings WHERE id = 1",
+            "SELECT name, accent_color, font_family, sidebar_width, window_button_layout FROM workspace_settings WHERE id = 1",
             [],
             |row| {
                 Ok(WorkspaceSettings {
@@ -178,6 +182,7 @@ pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
                     accent_color: row.get(1)?,
                     font_family: row.get(2)?,
                     sidebar_width: row.get(3)?,
+                    window_button_layout: row.get(4)?,
                 })
             },
         )
@@ -272,6 +277,26 @@ pub fn set_sidebar_width(
     if connection.execute(
         "UPDATE workspace_settings SET sidebar_width = ?1 WHERE id = 1",
         [sidebar_width],
+    )? == 0
+    {
+        return Err(AppError::missing());
+    }
+    load(connection)
+}
+
+pub fn set_window_button_layout(
+    connection: &mut Connection,
+    window_button_layout: &str,
+) -> Result<Workspace, AppError> {
+    let window_button_layout = window_button_layout.trim();
+    if !matches!(window_button_layout, "" | "left" | "right") {
+        return Err(AppError::invalid(
+            "Choose Auto, Left, or Right for window buttons.",
+        ));
+    }
+    if connection.execute(
+        "UPDATE workspace_settings SET window_button_layout = ?1 WHERE id = 1",
+        [window_button_layout],
     )? == 0
     {
         return Err(AppError::missing());
@@ -534,10 +559,74 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            6
+            7
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
+    }
+
+    #[test]
+    fn window_button_migration_is_additive_and_guard_accepts_its_version() {
+        let mut db = Connection::open_in_memory().unwrap();
+        for migration in [
+            include_str!("../migrations/001_workspace.sql"),
+            include_str!("../migrations/002_workspace_setup.sql"),
+            include_str!("../migrations/003_interface_font.sql"),
+            include_str!("../migrations/004_database_icons.sql"),
+            include_str!("../migrations/005_record_pages.sql"),
+            include_str!("../migrations/006_sidebar_width.sql"),
+            include_str!("test_seed.sql"),
+        ] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.execute("INSERT INTO workspace_settings (id, name, accent_color, font_family, sidebar_width) VALUES (1, 'Keep me', '#91baff', 'Installed Font', 280)", []).unwrap();
+        save_record_page(&mut db, 1, "Keep these notes").unwrap();
+        let before = workspace_snapshot(&db);
+        migrate(&mut db).unwrap();
+        assert_eq!(workspace_snapshot(&db), before);
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "Keep these notes");
+        let settings = load(&mut db).unwrap().settings.unwrap();
+        assert_eq!(settings.sidebar_width, Some(280));
+        assert_eq!(settings.window_button_layout, "");
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+        migrate(&mut db).unwrap();
+        assert_eq!(workspace_snapshot(&db), before);
+    }
+
+    #[test]
+    fn window_button_layout_round_trips_and_validates_input() {
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        assert_eq!(
+            set_window_button_layout(&mut db, "left").err().unwrap().code,
+            "not_found"
+        );
+        setup_workspace(&mut db, "Home", "#91baff").unwrap();
+        for layout in ["", "left", "right", "  left  ", "  "] {
+            let workspace = set_window_button_layout(&mut db, layout).unwrap();
+            assert_eq!(
+                serde_json::to_value(workspace).unwrap()["settings"]["windowButtonLayout"],
+                layout.trim()
+            );
+            assert_eq!(
+                load(&mut db).unwrap().settings.unwrap().window_button_layout,
+                layout.trim()
+            );
+        }
+        for layout in ["Left", "auto", "center", "garbage", "left\0", "right left"] {
+            assert_eq!(
+                set_window_button_layout(&mut db, layout).err().unwrap().code,
+                "invalid_input"
+            );
+        }
+        assert_eq!(
+            load(&mut db).unwrap().settings.unwrap().window_button_layout,
+            ""
+        );
     }
 
     #[test]
@@ -627,7 +716,7 @@ mod tests {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                6
+                7
             );
             save_record_page(&mut db, 1, "Persist me").unwrap();
         }
@@ -666,12 +755,12 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        db.pragma_update(None, "user_version", 7).unwrap();
+        db.pragma_update(None, "user_version", 8).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -802,6 +891,7 @@ mod tests {
             setup_workspace(&mut db, "My workspace", "#91baff").unwrap();
             set_font_family(&mut db, "Liberation Sans").unwrap();
             set_sidebar_width(&mut db, Some(280)).unwrap();
+            set_window_button_layout(&mut db, "left").unwrap();
             let workspace = create_database(
                 &mut db,
                 "Tasks",
@@ -828,6 +918,7 @@ mod tests {
         assert_eq!(settings.accent_color, "#91baff");
         assert_eq!(settings.font_family, "Liberation Sans");
         assert_eq!(settings.sidebar_width, Some(280));
+        assert_eq!(settings.window_button_layout, "left");
         assert!(!workspace.views[0].show_owner);
         drop(db);
         std::fs::remove_file(path).unwrap();
@@ -930,7 +1021,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            6
+            7
         );
         migrate(&mut db).unwrap();
         assert_eq!(snapshot(&db), before);
