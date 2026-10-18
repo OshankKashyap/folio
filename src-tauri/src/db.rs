@@ -76,7 +76,7 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 5 {
+    if version > 6 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
@@ -95,6 +95,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 5 {
         transaction.execute_batch(include_str!("../migrations/005_record_pages.sql"))?;
+    }
+    if version < 6 {
+        transaction.execute_batch(include_str!("../migrations/006_sidebar_width.sql"))?;
     }
     transaction.commit()?;
     Ok(())
@@ -153,6 +156,7 @@ pub struct WorkspaceSettings {
     name: String,
     accent_color: String,
     font_family: String,
+    sidebar_width: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -166,13 +170,14 @@ pub struct Workspace {
 pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
     let settings = connection
         .query_row(
-            "SELECT name, accent_color, font_family FROM workspace_settings WHERE id = 1",
+            "SELECT name, accent_color, font_family, sidebar_width FROM workspace_settings WHERE id = 1",
             [],
             |row| {
                 Ok(WorkspaceSettings {
                     name: row.get(0)?,
                     accent_color: row.get(1)?,
                     font_family: row.get(2)?,
+                    sidebar_width: row.get(3)?,
                 })
             },
         )
@@ -248,6 +253,25 @@ pub fn set_font_family(
     if connection.execute(
         "UPDATE workspace_settings SET font_family = ?1 WHERE id = 1",
         [font_family],
+    )? == 0
+    {
+        return Err(AppError::missing());
+    }
+    load(connection)
+}
+
+pub fn set_sidebar_width(
+    connection: &mut Connection,
+    sidebar_width: Option<i64>,
+) -> Result<Workspace, AppError> {
+    if sidebar_width.is_some_and(|width| !(180..=4096).contains(&width)) {
+        return Err(AppError::invalid(
+            "Choose a sidebar width between 180 and 4096 pixels.",
+        ));
+    }
+    if connection.execute(
+        "UPDATE workspace_settings SET sidebar_width = ?1 WHERE id = 1",
+        [sidebar_width],
     )? == 0
     {
         return Err(AppError::missing());
@@ -462,6 +486,94 @@ mod tests {
         db
     }
 
+    fn workspace_snapshot(db: &Connection) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        [
+            ("workspace_settings", "id, name, accent_color, font_family"),
+            ("databases", "*"),
+            ("saved_views", "*"),
+            ("records", "*"),
+        ]
+        .map(|(table, columns)| {
+            let mut statement = db
+                .prepare(&format!("SELECT {columns} FROM {table} ORDER BY id"))
+                .unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        })
+        .into()
+    }
+
+    #[test]
+    fn sidebar_migration_is_additive_and_guard_accepts_its_version() {
+        let mut db = Connection::open_in_memory().unwrap();
+        for migration in [
+            include_str!("../migrations/001_workspace.sql"),
+            include_str!("../migrations/002_workspace_setup.sql"),
+            include_str!("../migrations/003_interface_font.sql"),
+            include_str!("../migrations/004_database_icons.sql"),
+            include_str!("../migrations/005_record_pages.sql"),
+            include_str!("test_seed.sql"),
+        ] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.execute("INSERT INTO workspace_settings (id, name, accent_color, font_family) VALUES (1, 'Keep me', '#91baff', 'Installed Font')", []).unwrap();
+        save_record_page(&mut db, 1, "Keep these notes").unwrap();
+        let before = workspace_snapshot(&db);
+        migrate(&mut db).unwrap();
+        assert_eq!(workspace_snapshot(&db), before);
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "Keep these notes");
+        assert_eq!(load(&mut db).unwrap().settings.unwrap().sidebar_width, None);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            6
+        );
+        migrate(&mut db).unwrap();
+        assert_eq!(workspace_snapshot(&db), before);
+    }
+
+    #[test]
+    fn sidebar_width_round_trips_resets_and_validates_input() {
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        assert_eq!(
+            set_sidebar_width(&mut db, Some(210)).err().unwrap().code,
+            "not_found"
+        );
+        setup_workspace(&mut db, "Home", "#91baff").unwrap();
+        for width in [180, 280, 4096] {
+            let workspace = set_sidebar_width(&mut db, Some(width)).unwrap();
+            assert_eq!(workspace.settings.unwrap().sidebar_width, Some(width));
+            assert_eq!(
+                load(&mut db).unwrap().settings.unwrap().sidebar_width,
+                Some(width)
+            );
+        }
+        for width in [i64::MIN, -1, 0, 179, 4097, i64::MAX] {
+            assert_eq!(
+                set_sidebar_width(&mut db, Some(width)).err().unwrap().code,
+                "invalid_input"
+            );
+        }
+        assert_eq!(
+            load(&mut db).unwrap().settings.unwrap().sidebar_width,
+            Some(4096)
+        );
+        let workspace = set_sidebar_width(&mut db, None).unwrap();
+        assert_eq!(
+            serde_json::to_value(workspace).unwrap()["settings"]["sidebarWidth"],
+            serde_json::Value::Null
+        );
+    }
+
     #[test]
     fn pages_round_trip_upsert_validate_and_cascade() {
         let mut db = connection();
@@ -509,16 +621,13 @@ mod tests {
             db.execute_batch(include_str!("../migrations/004_database_icons.sql"))
                 .unwrap();
             db.execute_batch(include_str!("test_seed.sql")).unwrap();
-            let before = serde_json::to_value(load(&mut db).unwrap()).unwrap();
+            let before = workspace_snapshot(&db);
             migrate(&mut db).unwrap();
-            assert_eq!(
-                serde_json::to_value(load(&mut db).unwrap()).unwrap(),
-                before
-            );
+            assert_eq!(workspace_snapshot(&db), before);
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                5
+                6
             );
             save_record_page(&mut db, 1, "Persist me").unwrap();
         }
@@ -557,12 +666,12 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        db.pragma_update(None, "user_version", 6).unwrap();
+        db.pragma_update(None, "user_version", 7).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -692,6 +801,7 @@ mod tests {
             migrate(&mut db).unwrap();
             setup_workspace(&mut db, "My workspace", "#91baff").unwrap();
             set_font_family(&mut db, "Liberation Sans").unwrap();
+            set_sidebar_width(&mut db, Some(280)).unwrap();
             let workspace = create_database(
                 &mut db,
                 "Tasks",
@@ -717,6 +827,7 @@ mod tests {
         assert_eq!(settings.name, "My workspace");
         assert_eq!(settings.accent_color, "#91baff");
         assert_eq!(settings.font_family, "Liberation Sans");
+        assert_eq!(settings.sidebar_width, Some(280));
         assert!(!workspace.views[0].show_owner);
         drop(db);
         std::fs::remove_file(path).unwrap();
@@ -819,7 +930,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
         migrate(&mut db).unwrap();
         assert_eq!(snapshot(&db), before);

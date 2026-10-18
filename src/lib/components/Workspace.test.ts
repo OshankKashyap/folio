@@ -23,7 +23,7 @@ vi.mock("$lib/editor", () => ({
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
 });
 
 let data: WorkspaceData;
@@ -43,6 +43,10 @@ beforeEach(() => {
     data.settings!.fontFamily = fontFamily;
     return structuredClone(data);
   });
+  vi.mocked(api.setSidebarWidth).mockImplementation(async (sidebarWidth) => {
+    data.settings!.sidebarWidth = sidebarWidth;
+    return structuredClone(data);
+  });
   vi.mocked(api.saveView).mockImplementation(async (view) => {
     data.views = data.views.map((item) => item.id === view.id ? view : item);
     return structuredClone(data);
@@ -59,6 +63,143 @@ async function openWorkspace() {
 }
 
 describe("Folio workspace", () => {
+  describe("sidebar resizing", () => {
+    beforeEach(() => { vi.spyOn(window, "innerWidth", "get").mockReturnValue(1000); });
+
+    it("clears keyboard focus when dragging and restores it through Tab navigation", async () => {
+      const user = await openWorkspace();
+      const handle = screen.getByRole("separator", { name: "Sidebar width" });
+      handle.focus();
+      expect(document.activeElement).toBe(handle);
+      await pointer(handle, "pointerdown", 210);
+      expect(document.activeElement).not.toBe(handle);
+      await pointer(handle, "pointermove", 240);
+      await pointer(handle, "pointerup", 240);
+      expect(document.activeElement).not.toBe(handle);
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenCalledWith(240));
+      screen.getByRole("button", { name: "Settings" }).focus();
+      await user.tab();
+      expect(document.activeElement).toBe(handle);
+      await user.keyboard("{ArrowRight}");
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenLastCalledWith(256));
+      expect(workspaceSource.split(".sidebar-resize {")[1].split("}")[0]).toContain("outline: none;");
+      expect(workspaceSource).toContain(".sidebar-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }");
+    });
+
+    function pointer(handle: HTMLElement, type: string, clientX: number, pointerId = 1) {
+      const event = new MouseEvent(type, { bubbles: true, button: 0, clientX });
+      Object.defineProperty(event, "pointerId", { value: pointerId });
+      return fireEvent(handle, event);
+    }
+
+    it("captures a drag, clamps live against the viewport, and saves only on release", async () => {
+      await openWorkspace();
+      const handle = screen.getByRole("separator", { name: "Sidebar width" });
+      const shell = screen.getByRole("main").parentElement!;
+      const capture = vi.spyOn(handle, "setPointerCapture");
+      expect(handle.getAttribute("aria-orientation")).toBe("vertical");
+      expect(handle.tabIndex).toBe(0);
+      expect(shell.style.gridTemplateColumns).toBe("210px minmax(0, 1fr)");
+      await pointer(handle, "pointerdown", 210);
+      expect(capture).toHaveBeenCalledWith(1);
+      await pointer(handle, "pointermove", 100);
+      expect(shell.style.gridTemplateColumns).toBe("180px minmax(0, 1fr)");
+      await pointer(handle, "pointermove", 900, 2);
+      expect(shell.style.gridTemplateColumns).toBe("180px minmax(0, 1fr)");
+      await pointer(handle, "pointermove", 900);
+      expect(shell.style.gridTemplateColumns).toBe("300px minmax(0, 1fr)");
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(800);
+      await fireEvent(window, new Event("resize"));
+      await pointer(handle, "pointermove", 900);
+      expect(shell.style.gridTemplateColumns).toBe("240px minmax(0, 1fr)");
+      expect(api.setSidebarWidth).not.toHaveBeenCalled();
+      await pointer(handle, "pointerup", 900);
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenCalledExactlyOnceWith(240));
+      await pointer(handle, "pointermove", 100);
+      expect(shell.style.gridTemplateColumns).toBe("240px minmax(0, 1fr)");
+    });
+
+    it("persists each keyboard adjustment, Home/End, and double-click reset as NULL", async () => {
+      const user = await openWorkspace();
+      const handle = screen.getByRole("separator", { name: "Sidebar width" });
+      const shell = screen.getByRole("main").parentElement!;
+      handle.focus();
+      for (const [key, width] of [["ArrowRight", 226], ["ArrowLeft", 210], ["Home", 180], ["End", 300]] as const) {
+        await user.keyboard(`{${key}}`);
+        expect(shell.style.gridTemplateColumns).toBe(`${width}px minmax(0, 1fr)`);
+        await waitFor(() => expect(api.setSidebarWidth).toHaveBeenLastCalledWith(width));
+      }
+      expect(api.setSidebarWidth).toHaveBeenCalledTimes(4);
+      await fireEvent.doubleClick(handle);
+      expect(shell.style.gridTemplateColumns).toBe("210px minmax(0, 1fr)");
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenLastCalledWith(null));
+      await user.click(screen.getByRole("button", { name: "Toggle database sidebar" }));
+      expect(shell.style.gridTemplateColumns).toBe("");
+    });
+
+    it("initializes the saved width before revealing the workspace and restores it on remount", async () => {
+      data.settings!.sidebarWidth = 280;
+      let finishLoad!: (value: WorkspaceData) => void;
+      vi.mocked(api.load).mockImplementationOnce(() => new Promise((resolve) => { finishLoad = resolve; }));
+      const mounted = render(Workspace);
+      expect((mounted.container.firstElementChild as HTMLElement).style.visibility).toBe("hidden");
+      finishLoad(structuredClone(data));
+      await screen.findByRole("heading", { name: "Projects" });
+      expect((mounted.container.firstElementChild as HTMLElement).style.visibility).not.toBe("hidden");
+      expect(screen.getByRole("main").parentElement!.style.gridTemplateColumns).toBe("280px minmax(0, 1fr)");
+      await fireEvent.keyDown(screen.getByRole("separator"), { key: "ArrowLeft" });
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenCalledWith(264));
+      mounted.unmount();
+      render(Workspace);
+      await screen.findByRole("heading", { name: "Projects" });
+      expect(screen.getByRole("main").parentElement!.style.gridTemplateColumns).toBe("264px minmax(0, 1fr)");
+    });
+
+    it("preserves the narrow default, prioritizes the minimum, and leaves the mobile grid untouched", async () => {
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(550);
+      await openWorkspace();
+      const shell = screen.getByRole("main").parentElement!;
+      expect(shell.style.gridTemplateColumns).toBe("165px minmax(0, 1fr)");
+      await fireEvent.keyDown(screen.getByRole("separator"), { key: "End" });
+      expect(shell.style.gridTemplateColumns).toBe("180px minmax(0, 1fr)");
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenCalledWith(180));
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(380);
+      await fireEvent(window, new Event("resize"));
+      expect(shell.style.gridTemplateColumns).toBe("");
+      // jsdom does not evaluate media queries; assert the existing breakpoint's hide rule.
+      expect(workspaceSource.split("@media (max-width: 500px) {")[1]).toContain(".sidebar-resize { display: none; }");
+      expect(workspaceSource).toContain(".sidebar-resize { position: absolute;");
+    });
+
+    it("keeps the session width after a save failure and allows another adjustment", async () => {
+      vi.mocked(api.setSidebarWidth).mockRejectedValueOnce({ message: "Could not save sidebar width." });
+      await openWorkspace();
+      const handle = screen.getByRole("separator");
+      const shell = screen.getByRole("main").parentElement!;
+      await fireEvent.keyDown(handle, { key: "ArrowRight" });
+      expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Could not save sidebar width."));
+      expect(shell.style.gridTemplateColumns).toBe("226px minmax(0, 1fr)");
+      await fireEvent.keyDown(handle, { key: "ArrowRight" });
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenLastCalledWith(242));
+      expect(shell.style.gridTemplateColumns).toBe("242px minmax(0, 1fr)");
+    });
+
+    it("serializes saves without blocking interaction or replacing workspace data", async () => {
+      let finish!: (value: WorkspaceData) => void;
+      vi.mocked(api.setSidebarWidth).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      const user = await openWorkspace();
+      const handle = screen.getByRole("separator");
+      await fireEvent.keyDown(handle, { key: "ArrowRight" });
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenCalledWith(226));
+      await fireEvent.keyDown(handle, { key: "ArrowRight" });
+      expect(screen.getByRole("main").parentElement!.style.gridTemplateColumns).toBe("242px minmax(0, 1fr)");
+      await user.click(screen.getByRole("button", { name: "Reading list" }));
+      finish(structuredClone(data));
+      await waitFor(() => expect(api.setSidebarWidth).toHaveBeenLastCalledWith(242));
+      expect(screen.getByRole("heading", { name: "Reading list" })).toBeTruthy();
+    });
+  });
+
   it("opens pages with keyboard focus, without adding in-flow row geometry", async () => {
     const user = await openWorkspace();
     const trigger = screen.getAllByRole("button", { name: "Open page" })[0];
@@ -251,7 +392,7 @@ describe("Folio workspace", () => {
 
   it.each([["Teal", "#5ecfca"], ["Amber", "#f5cd6f"]])("saves the %s accent preset", async (label, accentColor) => {
     data = { settings: null, databases: [], views: [], records: [] };
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "" } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "", sidebarWidth: null } });
     const user = userEvent.setup();
     render(Workspace);
     await user.type(await screen.findByLabelText("Workspace name"), "Home");
@@ -264,7 +405,7 @@ describe("Folio workspace", () => {
   it("sets up an empty workspace and creates its first database without sample records", async () => {
     data = { settings: null, databases: [], views: [], records: [] };
     vi.mocked(api.setup).mockImplementation(async (name, accentColor) => {
-      data.settings = { name, accentColor, fontFamily: "" };
+      data.settings = { name, accentColor, fontFamily: "", sidebarWidth: null };
       return structuredClone(data);
     });
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
@@ -305,14 +446,14 @@ describe("Folio workspace", () => {
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save workspace.");
     expect(name).toHaveProperty("value", "Home");
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "" } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "", sidebarWidth: null } });
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     await screen.findByRole("heading", { name: "Welcome to Home" });
     expect(api.setup).toHaveBeenLastCalledWith("Home", "#123456");
   });
 
   it("shows database creation errors without leaving the empty workspace", async () => {
-    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "" }, databases: [], views: [], records: [] };
+    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null }, databases: [], views: [], records: [] };
     vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
     const user = userEvent.setup();
     render(Workspace);

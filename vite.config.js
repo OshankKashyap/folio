@@ -4,9 +4,27 @@ import { sveltekit } from "@sveltejs/kit/vite";
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
+/** @returns {import("vite").Plugin} */
+function ensureSvelteStyleSource() {
+  /** @type {import("vite").ViteDevServer | undefined} */
+  let server;
+  return {
+    name: "ensure-svelte-style-source",
+    apply: "serve",
+    enforce: "pre",
+    configureServer(devServer) { server = devServer; },
+    async load(id) {
+      if (server && /\.svelte\?svelte&type=style/.test(id)) {
+        // Populate Svelte's CSS metadata even when the stylesheet is requested first.
+        await server.environments.client.transformRequest(id.split("?")[0]);
+      }
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [sveltekit()],
+  plugins: [ensureSvelteStyleSource(), sveltekit()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

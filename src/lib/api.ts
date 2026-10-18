@@ -30,6 +30,9 @@ export const api = {
   setFontFamily(fontFamily: string): Promise<Workspace> {
     return invoke("set_font_family", { fontFamily });
   },
+  setSidebarWidth(sidebarWidth: number | null): Promise<Workspace> {
+    return invoke("set_sidebar_width", { sidebarWidth });
+  },
   getDefaultFont(): Promise<string> {
     return invoke("get_default_font");
   },

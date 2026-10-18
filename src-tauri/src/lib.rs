@@ -35,6 +35,16 @@ async fn set_font_family(
 }
 
 #[tauri::command]
+async fn set_sidebar_width(
+    database: State<'_, Database>,
+    sidebar_width: Option<i64>,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| db::set_sidebar_width(connection, sidebar_width))
+        .await
+}
+
+#[tauri::command]
 async fn create_database(
     database: State<'_, Database>,
     name: String,
@@ -184,6 +194,7 @@ pub fn run() {
             load_workspace,
             setup_workspace,
             set_font_family,
+            set_sidebar_width,
             get_default_font,
             check_font_available,
             create_database,

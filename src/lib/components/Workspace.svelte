@@ -40,6 +40,13 @@
   let error = $state("");
   let announcement = $state("");
   let sidebarOpen = $state(true);
+  let sidebarWidth = $state(210);
+  let customSidebarWidth = $state(false);
+  let viewportWidth = $state(0);
+  let sidebarDrag: { pointerId: number; startX: number; startWidth: number } | null = null;
+  let sidebarSave = Promise.resolve();
+  const sidebarMax = $derived(Math.max(180, Math.floor(viewportWidth * 0.3)));
+  const renderedSidebarWidth = $derived(customSidebarWidth ? Math.max(180, Math.min(sidebarMax, sidebarWidth)) : viewportWidth <= 700 ? 165 : 210);
   let settingsOpen = $state(false);
   let preferencesOpen = $state(false);
   let fontFamily = $state("");
@@ -97,6 +104,8 @@
     error = "";
     try {
       workspace = await api.load();
+      sidebarWidth = workspace.settings?.sidebarWidth ?? 210;
+      customSidebarWidth = workspace.settings?.sidebarWidth != null;
       const font = workspace.settings?.fontFamily ?? "";
       fontFamily = font && await checkFontAvailable(font) ? font : "";
       applyFont(fontFamily);
@@ -131,6 +140,64 @@
     const saved = await mutate(() => api.setFontFamily(font));
     if (saved) fontFamily = font;
     return saved;
+  }
+
+  function persistSidebarWidth(width: number | null) {
+    error = "";
+    // Serialize preference writes without blocking other workspace interactions.
+    sidebarSave = sidebarSave.then(async () => {
+      try {
+        await api.setSidebarWidth(width);
+      } catch (cause) {
+        error = errorMessage(cause);
+      }
+    });
+  }
+
+  function resizeSidebar(width: number) {
+    sidebarWidth = Math.max(180, Math.min(Math.max(180, Math.floor(window.innerWidth * 0.3)), Math.round(width)));
+    customSidebarWidth = true;
+  }
+
+  function sidebarPointerDown(event: PointerEvent) {
+    if (event.button !== 0 || sidebarDrag) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLDivElement;
+    handle.blur();
+    sidebarDrag = { pointerId: event.pointerId, startX: event.clientX, startWidth: renderedSidebarWidth };
+    handle.setPointerCapture(event.pointerId);
+  }
+
+  function sidebarPointerMove(event: PointerEvent) {
+    if (sidebarDrag?.pointerId !== event.pointerId) return;
+    resizeSidebar(sidebarDrag.startWidth + event.clientX - sidebarDrag.startX);
+  }
+
+  function sidebarPointerUp(event: PointerEvent) {
+    if (sidebarDrag?.pointerId !== event.pointerId) return;
+    sidebarPointerMove(event);
+    sidebarDrag = null;
+    persistSidebarWidth(sidebarWidth);
+  }
+
+  function resetSidebarWidth() {
+    sidebarWidth = 210;
+    customSidebarWidth = false;
+    persistSidebarWidth(null);
+  }
+
+  function sidebarKeydown(event: KeyboardEvent) {
+    let width: number;
+    switch (event.key) {
+      case "ArrowLeft": width = renderedSidebarWidth - 16; break;
+      case "ArrowRight": width = renderedSidebarWidth + 16; break;
+      case "Home": width = 180; break;
+      case "End": width = sidebarMax; break;
+      default: return;
+    }
+    event.preventDefault();
+    resizeSidebar(width);
+    persistSidebarWidth(sidebarWidth);
   }
 
   async function createDatabase() {
@@ -324,12 +391,13 @@
 </script>
 
 <svelte:head><meta name="description" content="Folio — a calm, local-first database workspace." /></svelte:head>
+<svelte:window bind:innerWidth={viewportWidth} />
 
 <div style:--accent={accent} style:--accent-ink={accentInk(accent)} style:visibility={loading ? "hidden" : undefined}>
 {#if !loading && !loadFailed && !workspace.settings}
   <WorkspaceSetup {busy} {error} onSubmit={setupWorkspace} />
 {:else}
-<div class="workspace-shell" class:sidebar-open={sidebarOpen}>
+<div class="workspace-shell" class:sidebar-open={sidebarOpen} style:grid-template-columns={sidebarOpen && viewportWidth > 500 ? `${renderedSidebarWidth}px minmax(0, 1fr)` : undefined}>
   {#if sidebarOpen}
     <aside id="database-sidebar" aria-label="Workspace navigation">
       <div class="brand"><span class="logo">f</span> folio</div>
@@ -348,6 +416,9 @@
         {/each}
       </nav>
       <div class="side-bottom"><span class="avatar">{initials}</span><div class="identity-text"><div>{workspace.settings?.name ?? "Your workspace"}</div><small>Local workspace</small><button bind:this={settingsButton} class="icon-button settings-button" aria-label="Settings" aria-haspopup="dialog" onclick={() => preferencesOpen = true}><Settings size={16} /></button></div></div>
+      <!-- A focusable separator is the WAI-ARIA window splitter pattern. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+      <div class="sidebar-resize" role="separator" tabindex="0" aria-label="Sidebar width" aria-orientation="vertical" aria-valuemin={Math.min(180, renderedSidebarWidth)} aria-valuemax={sidebarMax} aria-valuenow={renderedSidebarWidth} aria-controls="database-sidebar" onpointerdown={sidebarPointerDown} onpointermove={sidebarPointerMove} onpointerup={sidebarPointerUp} onpointercancel={() => sidebarDrag = null} onlostpointercapture={() => sidebarDrag = null} ondblclick={resetSidebarWidth} onkeydown={sidebarKeydown}></div>
     </aside>
   {/if}
 
@@ -538,7 +609,10 @@
 <style>
   .workspace-shell { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 100vh; min-height: calc(100dvh - var(--titlebar-height)); }
   .workspace-shell.sidebar-open { grid-template-columns: 210px minmax(0, 1fr); }
-  aside { grid-column: 1; grid-row: 1; min-width: 0; background: #141518; border-right: 1px solid var(--line); padding: 20px 12px; display: flex; flex-direction: column; }
+  aside { position: relative; grid-column: 1; grid-row: 1; min-width: 0; background: #141518; border-right: 1px solid var(--line); padding: 20px 12px; display: flex; flex-direction: column; }
+  .sidebar-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 5px; cursor: col-resize; touch-action: none; user-select: none; outline: none; }
+  .sidebar-resize:hover, .sidebar-resize:focus-visible { background: var(--accent-soft); }
+  .sidebar-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 26px; font-weight: 600; letter-spacing: -.4px; font-size: 18px; }
   .logo { background: var(--accent); color: var(--accent-ink); border-radius: 7px; padding: 2px 8px; }
   .caption { color: var(--sub); font-size: 11px; letter-spacing: 1px; padding: 20px 10px 8px; }
@@ -629,6 +703,7 @@
     .local-indicator { display: none; }
   }
   @media (max-width: 500px) {
+    .sidebar-resize { display: none; }
     .workspace-shell.sidebar-open { grid-template-columns: minmax(0, 1fr); }
     .sidebar-open > main { grid-column: 1; grid-row: 2; }
     aside { width: 100%; border-right: 0; border-bottom: 1px solid var(--line); padding: 12px; display: block; }
