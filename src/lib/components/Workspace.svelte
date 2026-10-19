@@ -163,6 +163,10 @@
     return saved;
   }
 
+  async function saveMinimizeToTray(enabled: boolean): Promise<boolean> {
+    return mutate(() => api.setMinimizeToTray(enabled));
+  }
+
   function resizeSidebar(width: number) {
     sidebarWidth = Math.max(180, Math.min(Math.max(180, Math.floor(window.innerWidth * 0.3)), Math.round(width)));
     customSidebarWidth = true;
@@ -564,7 +568,7 @@
 {/if}
 
 {#if preferencesOpen}
-  <SettingsPanel {fontFamily} windowButtonLayout={workspace.settings?.windowButtonLayout ?? ""} {busy} {error} onSave={saveFont} onSaveWindowButtonLayout={saveWindowButtonLayout} onClose={closePreferences} />
+  <SettingsPanel {fontFamily} windowButtonLayout={workspace.settings?.windowButtonLayout ?? ""} minimizeToTray={workspace.settings?.minimizeToTray ?? false} {busy} {error} onSave={saveFont} onSaveWindowButtonLayout={saveWindowButtonLayout} onSaveMinimizeToTray={saveMinimizeToTray} onClose={closePreferences} />
 {/if}
 
 {#if newDatabaseOpen}

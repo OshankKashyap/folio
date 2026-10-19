@@ -14,6 +14,9 @@ A local-first database workspace built with Tauri 2, Svelte 5, SvelteKit, TypeSc
 - Persistent manual row order using drag handles, move buttons, or Up/Down keys while a handle is focused; turn sorting off before reordering
 - Responsive layout, keyboard focus states, and recoverable save errors
 
+Settings → System offers “Minimize to tray when closed” (off by default); the tray restores Folio or quits it completely.
+GNOME requires the AppIndicator extension to show tray icons; keep this setting off unless that extension is installed.
+
 ## Prerequisites
 
 - Node.js 22.12+ (or a newer supported LTS) and npm

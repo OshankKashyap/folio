@@ -40,7 +40,7 @@ export type RecordPageContent = string;
 export type RecordPageUpdatedAt = string;
 
 export interface Workspace {
-  settings: { name: string; accentColor: string; fontFamily: string; sidebarWidth: number | null; windowButtonLayout: WindowButtonOverride } | null;
+  settings: { name: string; accentColor: string; fontFamily: string; sidebarWidth: number | null; windowButtonLayout: WindowButtonOverride; minimizeToTray: boolean } | null;
   databases: WorkspaceDatabase[];
   views: SavedView[];
   records: RecordItem[];

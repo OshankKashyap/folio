@@ -36,6 +36,9 @@ export const api = {
   setWindowButtonLayout(windowButtonLayout: WindowButtonOverride): Promise<Workspace> {
     return invoke("set_window_button_layout", { windowButtonLayout });
   },
+  setMinimizeToTray(minimizeToTray: boolean): Promise<Workspace> {
+    return invoke("set_minimize_to_tray", { minimizeToTray });
+  },
   getDefaultFont(): Promise<string> {
     return invoke("get_default_font");
   },

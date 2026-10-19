@@ -6,6 +6,11 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 
 beforeEach(() => vi.clearAllMocks());
 
+it.each([false, true])("passes minimize-to-tray (%j) through the typed command boundary", async (minimizeToTray) => {
+  await api.setMinimizeToTray(minimizeToTray);
+  expect(invoke).toHaveBeenCalledWith("set_minimize_to_tray", { minimizeToTray });
+});
+
 it.each([null, 280])("passes sidebar width (%j) through the typed command boundary", async (sidebarWidth) => {
   await api.setSidebarWidth(sidebarWidth);
   expect(invoke).toHaveBeenCalledWith("set_sidebar_width", { sidebarWidth });

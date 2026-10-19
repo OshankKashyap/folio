@@ -1,6 +1,7 @@
 mod database_icons;
 mod db;
 mod fonts;
+mod tray;
 mod window_layout;
 
 use db::{AppError, Database, RecordInput, SavedView, Workspace};
@@ -67,6 +68,21 @@ async fn create_database(
             db::create_database(connection, &name, emoji.as_deref(), custom_icon.as_deref())
         })
         .await
+}
+
+#[tauri::command]
+async fn set_minimize_to_tray(
+    app: tauri::AppHandle,
+    database: State<'_, Database>,
+    minimize_to_tray: bool,
+) -> Result<Workspace, AppError> {
+    let workspace = database
+        .run(move |connection| db::set_minimize_to_tray(connection, minimize_to_tray))
+        .await?;
+    if let Err(error) = tray::sync(&app).await {
+        eprintln!("Could not update the Folio tray icon: {error}");
+    }
+    Ok(workspace)
 }
 
 #[tauri::command]
@@ -197,6 +213,9 @@ fn production_data_dir(home: &Path) -> PathBuf {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            tray::show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -207,7 +226,26 @@ pub fn run() {
             };
             std::fs::create_dir_all(&directory)?;
             app.manage(Database::open(&directory.join("folio.sqlite3"))?);
+            app.manage(tray::TrayState::default());
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = tray::sync(&handle).await {
+                    eprintln!("Could not create the Folio tray icon: {error}");
+                }
+            });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.state::<Database>().minimize_to_tray().unwrap_or(false)
+                && tray::exists(window.app_handle())
+            {
+                // A failed hide must not leave an unclosable window.
+                if window.hide().is_ok() {
+                    api.prevent_close();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             load_workspace,
@@ -215,6 +253,7 @@ pub fn run() {
             set_font_family,
             set_sidebar_width,
             set_window_button_layout,
+            set_minimize_to_tray,
             get_default_font,
             check_font_available,
             create_database,

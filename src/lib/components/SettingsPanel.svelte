@@ -5,13 +5,15 @@
   import { api } from "$lib/api";
   import type { WindowButtonOverride } from "$lib/types";
 
-  let { fontFamily, windowButtonLayout, busy, error, onSave, onSaveWindowButtonLayout, onClose }: {
+  let { fontFamily, windowButtonLayout, minimizeToTray, busy, error, onSave, onSaveWindowButtonLayout, onSaveMinimizeToTray, onClose }: {
     fontFamily: string;
     windowButtonLayout: WindowButtonOverride;
+    minimizeToTray: boolean;
     busy: boolean;
     error: string;
     onSave: (font: string) => Promise<boolean>;
     onSaveWindowButtonLayout: (layout: WindowButtonOverride) => Promise<boolean>;
+    onSaveMinimizeToTray: (enabled: boolean) => Promise<boolean>;
     onClose: () => void;
   } = $props();
 
@@ -21,6 +23,7 @@
   let notFound = $state(false);
   let defaultFont = $state("");
   let buttonLayout = $state(untrack(() => windowButtonLayout));
+  let trayEnabled = $state(untrack(() => minimizeToTray));
   let detectedSide = $state("");
   let category = $state("interface");
   let timer: ReturnType<typeof setTimeout>;
@@ -64,6 +67,11 @@
     buttonLayout = layout;
     if (!await onSaveWindowButtonLayout(layout)) buttonLayout = windowButtonLayout;
   }
+
+  async function updateMinimizeToTray(enabled: boolean) {
+    trayEnabled = enabled;
+    if (!await onSaveMinimizeToTray(enabled)) trayEnabled = minimizeToTray;
+  }
 </script>
 
 <dialog bind:this={dialog} aria-labelledby="settings-heading" oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={(event) => { if (event.target === dialog) onClose(); }}>
@@ -74,6 +82,7 @@
   <div class="body">
     <nav aria-label="Settings categories">
       <button type="button" aria-current={category === "interface" ? "page" : undefined} aria-controls="interface-settings" onclick={() => category = "interface"}>Interface</button>
+      <button type="button" aria-current={category === "system" ? "page" : undefined} aria-controls="system-settings" onclick={() => category = "system"}>System</button>
     </nav>
     <section id="interface-settings" aria-labelledby="interface-heading" hidden={category !== "interface"}>
       <h3 id="interface-heading">Interface</h3>
@@ -89,6 +98,12 @@
           <label><input type="radio" name="window-buttons" value={value} checked={buttonLayout === value} onchange={() => { void updateWindowButtonLayout(value as WindowButtonOverride); }} />{value === "" ? detectedSide ? `Auto (currently ${detectedSide})` : "Auto" : value === "left" ? "Left" : "Right"}</label>
         {/each}
       </fieldset>
+      {#if error}<p class="save-error" role="alert">{error}</p>{/if}
+    </section>
+    <section id="system-settings" aria-labelledby="system-heading" hidden={category !== "system"}>
+      <h3 id="system-heading">System</h3>
+      <label class="tray-setting"><input type="checkbox" checked={trayEnabled} disabled={busy} aria-describedby="tray-hint" onchange={(event) => { void updateMinimizeToTray(event.currentTarget.checked); }} />Minimize to tray when closed</label>
+      <p id="tray-hint">Closing Folio keeps it running in the system tray.</p>
       {#if error}<p class="save-error" role="alert">{error}</p>{/if}
     </section>
   </div>
@@ -116,6 +131,8 @@
   .window-buttons legend { padding: 0; }
   .window-buttons label { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
   .window-buttons input { width: auto; margin: 0; flex-shrink: 0; }
+  .tray-setting { display: flex; align-items: center; gap: 8px; }
+  .tray-setting input { width: auto; margin: 0; flex-shrink: 0; }
   @media (max-width: 480px) {
     dialog { padding: 18px; }
     .body { grid-template-columns: 88px minmax(0, 1fr); gap: 12px; }
