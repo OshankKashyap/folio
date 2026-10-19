@@ -4,6 +4,7 @@ mod fonts;
 mod window_layout;
 
 use db::{AppError, Database, RecordInput, SavedView, Workspace};
+use std::path::{Path, PathBuf};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use window_layout::WindowButtonLayout;
@@ -189,13 +190,21 @@ async fn check_font_available(font_family: String) -> Result<bool, &'static str>
         .map_err(|_| "System font detection is unavailable.")?
 }
 
+fn production_data_dir(home: &Path) -> PathBuf {
+    home.join(".folio")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let directory = app.path().app_data_dir()?;
+            let directory = if tauri::is_dev() {
+                app.path().app_data_dir()?
+            } else {
+                production_data_dir(&app.path().home_dir()?)
+            };
             std::fs::create_dir_all(&directory)?;
             app.manage(Database::open(&directory.join("folio.sqlite3"))?);
             Ok(())
@@ -221,4 +230,29 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_data_dir_uses_home() {
+        assert_eq!(
+            production_data_dir(Path::new("/home/folio")),
+            PathBuf::from("/home/folio/.folio")
+        );
+    }
+
+    #[test]
+    fn production_data_dir_accepts_relative_and_unusual_paths() {
+        for (home, expected) in [
+            ("", ".folio"),
+            (".", "./.folio"),
+            ("../relative", "../relative/.folio"),
+            ("home with spaces/用户", "home with spaces/用户/.folio"),
+        ] {
+            assert_eq!(production_data_dir(Path::new(home)), PathBuf::from(expected));
+        }
+    }
 }

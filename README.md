@@ -40,13 +40,13 @@ The workspace requires the Tauri desktop runtime. `npm run dev` serves the front
 
 Rust owns the SQLite connection and exposes specific Tauri commands; the frontend cannot execute arbitrary SQL. Blocking database work runs off the UI thread. Foreign keys, validated properties, versioned migrations, WAL journaling, and transactional row reordering protect the workspace data.
 
-The database file is `folio.sqlite3` in Tauri’s application data directory. On Linux the default is:
+Dev runs keep `folio.sqlite3` in Tauri’s application data directory; installed builds use `~/.folio/folio.sqlite3`. On Linux the dev default is:
 
 ```text
 ~/.local/share/com.oshank.notionalternative/folio.sqlite3
 ```
 
-`XDG_DATA_HOME` overrides the Linux base directory. Each sidebar database is a logical collection in this single SQLite file. On first launch, choose a workspace name and accent color, then create your first empty database. Setup and accent choices persist in SQLite; later launches go straight to the workspace. Dates are stored as nullable ISO dates (`YYYY-MM-DD`); timestamps use UTC.
+`XDG_DATA_HOME` overrides the Linux base directory for dev runs only. Each sidebar database is a logical collection in this single SQLite file. On first launch, choose a workspace name and accent color, then create your first empty database. Setup and accent choices persist in SQLite; later launches go straight to the workspace. Dates are stored as nullable ISO dates (`YYYY-MM-DD`); timestamps use UTC.
 
 **Upgrade reset:** schema version 2 intentionally clears all existing databases, saved views, and records from the pre-onboarding app once. The next launch shows setup. This is not repeated after setup. Back up the old database before running this version if you want to retain a copy.
 
