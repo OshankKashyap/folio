@@ -17,6 +17,9 @@ A local-first database workspace built with Tauri 2, Svelte 5, SvelteKit, TypeSc
 Settings → System offers “Minimize to tray when closed” (off by default); the tray restores Folio or quits it completely.
 GNOME requires the AppIndicator extension to show tray icons; keep this setting off unless that extension is installed.
 
+Settings → System also offers “Start minimized in tray on login” (off by default). When on, Folio registers
+with the OS to launch hidden in the tray at login. This setting is disabled in development builds.
+
 ## Prerequisites
 
 - Node.js 22.12+ (or a newer supported LTS) and npm

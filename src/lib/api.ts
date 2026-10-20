@@ -39,6 +39,12 @@ export const api = {
   setMinimizeToTray(minimizeToTray: boolean): Promise<Workspace> {
     return invoke("set_minimize_to_tray", { minimizeToTray });
   },
+  setAutostart(autostart: boolean): Promise<Workspace> {
+    return invoke("set_autostart", { autostart });
+  },
+  isDevBuild(): Promise<boolean> {
+    return invoke("is_dev_build");
+  },
   getDefaultFont(): Promise<string> {
     return invoke("get_default_font");
   },

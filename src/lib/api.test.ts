@@ -11,6 +11,17 @@ it.each([false, true])("passes minimize-to-tray (%j) through the typed command b
   expect(invoke).toHaveBeenCalledWith("set_minimize_to_tray", { minimizeToTray });
 });
 
+it.each([false, true])("passes autostart (%j) through the typed command boundary", async (autostart) => {
+  await api.setAutostart(autostart);
+  expect(invoke).toHaveBeenCalledWith("set_autostart", { autostart });
+});
+
+it("passes the build mode through the typed command boundary", async () => {
+  vi.mocked(invoke).mockResolvedValueOnce(true);
+  expect(await api.isDevBuild()).toBe(true);
+  expect(invoke).toHaveBeenCalledWith("is_dev_build");
+});
+
 it.each([null, 280])("passes sidebar width (%j) through the typed command boundary", async (sidebarWidth) => {
   await api.setSidebarWidth(sidebarWidth);
   expect(invoke).toHaveBeenCalledWith("set_sidebar_width", { sidebarWidth });

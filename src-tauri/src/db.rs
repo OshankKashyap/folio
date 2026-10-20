@@ -84,7 +84,7 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 8 {
+    if version > 9 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
@@ -112,6 +112,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 8 {
         transaction.execute_batch(include_str!("../migrations/008_minimize_to_tray.sql"))?;
+    }
+    if version < 9 {
+        transaction.execute_batch(include_str!("../migrations/009_autostart.sql"))?;
     }
     transaction.commit()?;
     Ok(())
@@ -173,6 +176,7 @@ pub struct WorkspaceSettings {
     sidebar_width: Option<i64>,
     window_button_layout: String,
     minimize_to_tray: bool,
+    autostart: bool,
 }
 
 #[derive(Serialize)]
@@ -186,7 +190,7 @@ pub struct Workspace {
 pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
     let settings = connection
         .query_row(
-            "SELECT name, accent_color, font_family, sidebar_width, window_button_layout, minimize_to_tray FROM workspace_settings WHERE id = 1",
+            "SELECT name, accent_color, font_family, sidebar_width, window_button_layout, minimize_to_tray, autostart FROM workspace_settings WHERE id = 1",
             [],
             |row| {
                 Ok(WorkspaceSettings {
@@ -196,6 +200,7 @@ pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
                     sidebar_width: row.get(3)?,
                     window_button_layout: row.get(4)?,
                     minimize_to_tray: row.get(5)?,
+                    autostart: row.get(6)?,
                 })
             },
         )
@@ -335,6 +340,28 @@ pub fn set_minimize_to_tray(
     if connection.execute(
         "UPDATE workspace_settings SET minimize_to_tray = ?1 WHERE id = 1",
         [minimize_to_tray],
+    )? == 0
+    {
+        return Err(AppError::missing());
+    }
+    load(connection)
+}
+
+pub fn get_autostart(connection: &mut Connection) -> Result<bool, AppError> {
+    Ok(connection
+        .query_row(
+            "SELECT autostart FROM workspace_settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+pub fn set_autostart(connection: &mut Connection, autostart: bool) -> Result<Workspace, AppError> {
+    if connection.execute(
+        "UPDATE workspace_settings SET autostart = ?1 WHERE id = 1",
+        [autostart],
     )? == 0
     {
         return Err(AppError::missing());
@@ -597,7 +624,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -629,7 +656,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -663,7 +690,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -691,6 +718,64 @@ mod tests {
                 load(&mut db).unwrap().settings.unwrap().minimize_to_tray,
                 enabled
             );
+        }
+    }
+
+    #[test]
+    fn autostart_migration_is_additive_and_guard_accepts_its_version() {
+        let mut db = Connection::open_in_memory().unwrap();
+        for migration in [
+            include_str!("../migrations/001_workspace.sql"),
+            include_str!("../migrations/002_workspace_setup.sql"),
+            include_str!("../migrations/003_interface_font.sql"),
+            include_str!("../migrations/004_database_icons.sql"),
+            include_str!("../migrations/005_record_pages.sql"),
+            include_str!("../migrations/006_sidebar_width.sql"),
+            include_str!("../migrations/007_window_button_layout.sql"),
+            include_str!("../migrations/008_minimize_to_tray.sql"),
+            include_str!("test_seed.sql"),
+        ] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.execute("INSERT INTO workspace_settings (id, name, accent_color, font_family, sidebar_width, window_button_layout, minimize_to_tray) VALUES (1, 'Keep me', '#91baff', 'Installed Font', 280, 'left', 1)", []).unwrap();
+        save_record_page(&mut db, 1, "Keep these notes").unwrap();
+        let before = workspace_snapshot(&db);
+        migrate(&mut db).unwrap();
+        assert_eq!(workspace_snapshot(&db), before);
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "Keep these notes");
+        let settings = load(&mut db).unwrap().settings.unwrap();
+        assert_eq!(settings.sidebar_width, Some(280));
+        assert_eq!(settings.window_button_layout, "left");
+        assert!(settings.minimize_to_tray);
+        assert!(!settings.autostart);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            9
+        );
+        migrate(&mut db).unwrap();
+        assert_eq!(workspace_snapshot(&db), before);
+    }
+
+    #[test]
+    fn autostart_round_trips_and_defaults_to_false() {
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        assert!(!get_autostart(&mut db).unwrap());
+        assert_eq!(
+            set_autostart(&mut db, true).err().unwrap().code,
+            "not_found"
+        );
+        let workspace = setup_workspace(&mut db, "Home", "#91baff").unwrap();
+        assert!(!workspace.settings.unwrap().autostart);
+        for enabled in [true, false] {
+            let workspace = set_autostart(&mut db, enabled).unwrap();
+            assert_eq!(
+                serde_json::to_value(workspace).unwrap()["settings"]["autostart"],
+                enabled
+            );
+            assert_eq!(get_autostart(&mut db).unwrap(), enabled);
+            assert_eq!(load(&mut db).unwrap().settings.unwrap().autostart, enabled);
         }
     }
 
@@ -813,7 +898,7 @@ mod tests {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                8
+                9
             );
             save_record_page(&mut db, 1, "Persist me").unwrap();
         }
@@ -852,12 +937,12 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        db.pragma_update(None, "user_version", 9).unwrap();
+        db.pragma_update(None, "user_version", 10).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -1121,7 +1206,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
         migrate(&mut db).unwrap();
         assert_eq!(snapshot(&db), before);

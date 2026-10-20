@@ -25,7 +25,7 @@ vi.mock("$lib/editor", () => ({
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), setMinimizeToTray: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), setMinimizeToTray: vi.fn(), setAutostart: vi.fn(), isDevBuild: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
 });
 
 let data: WorkspaceData;
@@ -45,6 +45,11 @@ beforeEach(() => {
     data.settings!.minimizeToTray = minimizeToTray;
     return structuredClone(data);
   });
+  vi.mocked(api.setAutostart).mockImplementation(async (autostart) => {
+    data.settings!.autostart = autostart;
+    return structuredClone(data);
+  });
+  vi.mocked(api.isDevBuild).mockResolvedValue(false);
   vi.mocked(api.pickDatabaseIcon).mockResolvedValue(null);
   vi.mocked(api.getRecordPage).mockResolvedValue("# Notes");
   vi.mocked(api.saveRecordPage).mockResolvedValue("2026-10-17T12:00:00.000Z");
@@ -404,7 +409,7 @@ describe("Folio workspace", () => {
 
   it.each([["Teal", "#5ecfca"], ["Amber", "#f5cd6f"]])("saves the %s accent preset", async (label, accentColor) => {
     data = { settings: null, databases: [], views: [], records: [] };
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false } });
     const user = userEvent.setup();
     render(Workspace);
     await user.type(await screen.findByLabelText("Workspace name"), "Home");
@@ -417,7 +422,7 @@ describe("Folio workspace", () => {
   it("sets up an empty workspace and creates its first database without sample records", async () => {
     data = { settings: null, databases: [], views: [], records: [] };
     vi.mocked(api.setup).mockImplementation(async (name, accentColor) => {
-      data.settings = { name, accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false };
+      data.settings = { name, accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false };
       return structuredClone(data);
     });
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
@@ -458,14 +463,14 @@ describe("Folio workspace", () => {
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save workspace.");
     expect(name).toHaveProperty("value", "Home");
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false } });
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     await screen.findByRole("heading", { name: "Welcome to Home" });
     expect(api.setup).toHaveBeenLastCalledWith("Home", "#123456");
   });
 
   it("shows database creation errors without leaving the empty workspace", async () => {
-    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false }, databases: [], views: [], records: [] };
+    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false }, databases: [], views: [], records: [] };
     vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
     const user = userEvent.setup();
     render(Workspace);
@@ -656,6 +661,45 @@ describe("Folio workspace", () => {
     expect(checkbox).toHaveProperty("checked", enabled);
     expect(checkbox).toHaveProperty("disabled", false);
     expect(data.settings!.minimizeToTray).toBe(enabled);
+  });
+
+  it.each([false, true])("saves autostart from the System pane (%s)", async (enabled) => {
+    data.settings!.autostart = enabled;
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Start minimized in tray on login" });
+    expect(checkbox).toHaveProperty("checked", enabled);
+    await user.click(checkbox);
+    await waitFor(() => expect(api.setAutostart).toHaveBeenCalledExactlyOnceWith(!enabled));
+    expect(data.settings!.autostart).toBe(!enabled);
+    expect(screen.getByText("Folio starts in the background when you log in, with no window.")).toBeTruthy();
+  });
+
+  it("reverts a failed autostart save and disables the checkbox while busy", async () => {
+    let failSave!: (error: unknown) => void;
+    vi.mocked(api.setAutostart).mockImplementationOnce(() => new Promise((_, reject) => { failSave = reject; }));
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Start minimized in tray on login" });
+    await user.click(checkbox);
+    expect(checkbox).toHaveProperty("disabled", true);
+    failSave({ message: "Could not save autostart setting." });
+    expect(await within(screen.getByRole("dialog")).findByRole("alert")).toHaveProperty("textContent", "Could not save autostart setting.");
+    expect(checkbox).toHaveProperty("checked", false);
+    expect(checkbox).toHaveProperty("disabled", false);
+    expect(data.settings!.autostart).toBe(false);
+  });
+
+  it("disables autostart in development builds with an explanatory hint", async () => {
+    vi.mocked(api.isDevBuild).mockResolvedValue(true);
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Start minimized in tray on login" });
+    await waitFor(() => expect(checkbox).toHaveProperty("disabled", true));
+    expect(screen.getByText("Autostart is unavailable in development builds.")).toBeTruthy();
   });
 
   it("saves window button overrides live and restores the cached detected order in Auto", async () => {

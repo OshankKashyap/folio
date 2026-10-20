@@ -51,6 +51,7 @@
   let settingsOpen = $state(false);
   let preferencesOpen = $state(false);
   let fontFamily = $state("");
+  let devBuild = $state(false);
   let databaseId = $state<number | null>(null);
   let selectedViews = $state<Record<number, number>>({});
   let editing = $state<RecordItem | null>(null);
@@ -96,7 +97,7 @@
   const rows = $derived(visibleRecords(workspace.records, view));
   const selectedIndex = $derived(rows.findIndex((record) => record.id === selectedRow));
 
-  onMount(() => { void load(); });
+  onMount(() => { void load(); void api.isDevBuild().then((value) => { devBuild = value; }).catch(() => {}); });
 
   async function load() {
     if (busy) return;
@@ -165,6 +166,10 @@
 
   async function saveMinimizeToTray(enabled: boolean): Promise<boolean> {
     return mutate(() => api.setMinimizeToTray(enabled));
+  }
+
+  async function saveAutostart(enabled: boolean): Promise<boolean> {
+    return mutate(() => api.setAutostart(enabled));
   }
 
   function resizeSidebar(width: number) {
@@ -568,7 +573,7 @@
 {/if}
 
 {#if preferencesOpen}
-  <SettingsPanel {fontFamily} windowButtonLayout={workspace.settings?.windowButtonLayout ?? ""} minimizeToTray={workspace.settings?.minimizeToTray ?? false} {busy} {error} onSave={saveFont} onSaveWindowButtonLayout={saveWindowButtonLayout} onSaveMinimizeToTray={saveMinimizeToTray} onClose={closePreferences} />
+  <SettingsPanel {fontFamily} windowButtonLayout={workspace.settings?.windowButtonLayout ?? ""} minimizeToTray={workspace.settings?.minimizeToTray ?? false} autostart={workspace.settings?.autostart ?? false} {devBuild} {busy} {error} onSave={saveFont} onSaveWindowButtonLayout={saveWindowButtonLayout} onSaveMinimizeToTray={saveMinimizeToTray} onSaveAutostart={saveAutostart} onClose={closePreferences} />
 {/if}
 
 {#if newDatabaseOpen}

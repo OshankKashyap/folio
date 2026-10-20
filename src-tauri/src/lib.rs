@@ -7,6 +7,7 @@ mod window_layout;
 use db::{AppError, Database, RecordInput, SavedView, Workspace};
 use std::path::{Path, PathBuf};
 use tauri::{Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use window_layout::WindowButtonLayout;
 
@@ -83,6 +84,46 @@ async fn set_minimize_to_tray(
         eprintln!("Could not update the Folio tray icon: {error}");
     }
     Ok(workspace)
+}
+
+#[tauri::command]
+async fn is_dev_build() -> bool {
+    tauri::is_dev()
+}
+
+fn validate_autostart(autostart: bool, dev: bool) -> Result<(), AppError> {
+    if autostart && dev {
+        return Err(AppError::invalid(
+            "Autostart is unavailable in development builds of Folio.",
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_autostart(
+    app: tauri::AppHandle,
+    database: State<'_, Database>,
+    autostart: bool,
+) -> Result<Workspace, AppError> {
+    validate_autostart(autostart, tauri::is_dev())?;
+    // Register with the OS first so the stored setting never claims an entry
+    // that was not created.
+    if !tauri::is_dev() {
+        let manager = app.autolaunch();
+        let updated = if autostart {
+            manager.enable()
+        } else {
+            manager.disable()
+        };
+        updated.map_err(|error| {
+            eprintln!("Could not update the Folio autostart entry: {error}");
+            AppError::invalid("Could not update the autostart setting. Please try again.")
+        })?;
+    }
+    database
+        .run(move |connection| db::set_autostart(connection, autostart))
+        .await
 }
 
 #[tauri::command]
@@ -210,12 +251,44 @@ fn production_data_dir(home: &Path) -> PathBuf {
     home.join(".folio")
 }
 
+fn restore_autostart(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let enabled = match app.state::<Database>().run(db::get_autostart).await {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                eprintln!("Could not read the Folio autostart setting: {error:?}");
+                return;
+            }
+        };
+        if !enabled {
+            return;
+        }
+        let manager = app.autolaunch();
+        match manager.is_enabled() {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(error) = manager.enable() {
+                    eprintln!("Could not restore the Folio autostart entry: {error}");
+                }
+            }
+            Err(error) => eprintln!("Could not check the Folio autostart entry: {error}"),
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             tray::show_main_window(app);
         }))
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Folio")
+                .arg("--minimized")
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -227,12 +300,18 @@ pub fn run() {
             std::fs::create_dir_all(&directory)?;
             app.manage(Database::open(&directory.join("folio.sqlite3"))?);
             app.manage(tray::TrayState::default());
+            if std::env::args().any(|argument| argument == "--minimized") {
+                tray::start_hidden(app.handle());
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = tray::sync(&handle).await {
                     eprintln!("Could not create the Folio tray icon: {error}");
                 }
             });
+            if !tauri::is_dev() {
+                restore_autostart(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -254,6 +333,8 @@ pub fn run() {
             set_sidebar_width,
             set_window_button_layout,
             set_minimize_to_tray,
+            set_autostart,
+            is_dev_build,
             get_default_font,
             check_font_available,
             create_database,
@@ -274,6 +355,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autostart_registration_is_refused_in_development_builds() {
+        assert!(validate_autostart(true, true).is_err());
+        assert!(validate_autostart(false, true).is_ok());
+        assert!(validate_autostart(true, false).is_ok());
+        assert!(validate_autostart(false, false).is_ok());
+    }
 
     #[test]
     fn production_data_dir_uses_home() {

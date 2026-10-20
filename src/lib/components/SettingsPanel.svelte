@@ -5,15 +5,18 @@
   import { api } from "$lib/api";
   import type { WindowButtonOverride } from "$lib/types";
 
-  let { fontFamily, windowButtonLayout, minimizeToTray, busy, error, onSave, onSaveWindowButtonLayout, onSaveMinimizeToTray, onClose }: {
+  let { fontFamily, windowButtonLayout, minimizeToTray, autostart, devBuild, busy, error, onSave, onSaveWindowButtonLayout, onSaveMinimizeToTray, onSaveAutostart, onClose }: {
     fontFamily: string;
     windowButtonLayout: WindowButtonOverride;
     minimizeToTray: boolean;
+    autostart: boolean;
+    devBuild: boolean;
     busy: boolean;
     error: string;
     onSave: (font: string) => Promise<boolean>;
     onSaveWindowButtonLayout: (layout: WindowButtonOverride) => Promise<boolean>;
     onSaveMinimizeToTray: (enabled: boolean) => Promise<boolean>;
+    onSaveAutostart: (enabled: boolean) => Promise<boolean>;
     onClose: () => void;
   } = $props();
 
@@ -24,6 +27,7 @@
   let defaultFont = $state("");
   let buttonLayout = $state(untrack(() => windowButtonLayout));
   let trayEnabled = $state(untrack(() => minimizeToTray));
+  let autostartEnabled = $state(untrack(() => autostart));
   let detectedSide = $state("");
   let category = $state("interface");
   let timer: ReturnType<typeof setTimeout>;
@@ -72,6 +76,11 @@
     trayEnabled = enabled;
     if (!await onSaveMinimizeToTray(enabled)) trayEnabled = minimizeToTray;
   }
+
+  async function updateAutostart(enabled: boolean) {
+    autostartEnabled = enabled;
+    if (!await onSaveAutostart(enabled)) autostartEnabled = autostart;
+  }
 </script>
 
 <dialog bind:this={dialog} aria-labelledby="settings-heading" oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={(event) => { if (event.target === dialog) onClose(); }}>
@@ -104,6 +113,8 @@
       <h3 id="system-heading">System</h3>
       <label class="tray-setting"><input type="checkbox" checked={trayEnabled} disabled={busy} aria-describedby="tray-hint" onchange={(event) => { void updateMinimizeToTray(event.currentTarget.checked); }} />Minimize to tray when closed</label>
       <p id="tray-hint">Closing Folio keeps it running in the system tray.</p>
+      <label class="tray-setting"><input type="checkbox" checked={autostartEnabled} disabled={busy || devBuild} aria-describedby="autostart-hint" onchange={(event) => { void updateAutostart(event.currentTarget.checked); }} />Start minimized in tray on login</label>
+      <p id="autostart-hint">{devBuild ? "Autostart is unavailable in development builds." : "Folio starts in the background when you log in, with no window."}</p>
       {#if error}<p class="save-error" role="alert">{error}</p>{/if}
     </section>
   </div>

@@ -1,11 +1,24 @@
 use crate::db::{self, Database};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct TrayState {
     update: tauri::async_runtime::Mutex<()>,
     handle: Mutex<Option<backend::Handle>>,
+    tray_only: AtomicBool,
+}
+
+/// Hides the window for a `--minimized` launch and keeps the tray icon alive
+/// until the window is shown for the first time.
+pub fn start_hidden(app: &AppHandle) {
+    app.state::<TrayState>()
+        .tray_only
+        .store(true, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
 }
 
 pub fn show_main_window(app: &AppHandle) {
@@ -13,6 +26,19 @@ pub fn show_main_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+    if app
+        .state::<TrayState>()
+        .tray_only
+        .swap(false, Ordering::SeqCst)
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            // Tray-only mode is over, so honor the stored setting again.
+            if let Err(error) = sync(&app).await {
+                eprintln!("Could not update the Folio tray icon: {error}");
+            }
+        });
     }
 }
 
@@ -35,6 +61,9 @@ pub async fn sync(app: &AppHandle) -> Result<(), String> {
         .run(db::get_minimize_to_tray)
         .await
         .map_err(|error| format!("{error:?}"))?;
+    // The tray is the only way back while the app started hidden, even when
+    // "Minimize to tray when closed" is off.
+    let enabled = enabled || state.tray_only.load(Ordering::SeqCst);
     if enabled && exists(app) {
         return Ok(());
     }
