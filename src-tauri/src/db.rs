@@ -516,6 +516,22 @@ pub fn delete_record(connection: &mut Connection, id: i64) -> Result<Workspace, 
     load(connection)
 }
 
+pub fn delete_records(connection: &mut Connection, record_ids: &[i64]) -> Result<usize, AppError> {
+    if record_ids.is_empty() {
+        return Ok(0);
+    }
+    let transaction = connection.transaction()?;
+    let mut deleted = 0;
+    {
+        let mut statement = transaction.prepare("DELETE FROM records WHERE id = ?1")?;
+        for id in record_ids {
+            deleted += statement.execute([id])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(deleted)
+}
+
 pub fn update_view(connection: &mut Connection, view: SavedView) -> Result<Workspace, AppError> {
     if !["table", "board", "list"].contains(&view.layout.as_str()) {
         return Err(AppError::invalid("Choose a valid layout."));
@@ -598,6 +614,53 @@ mod tests {
                 .unwrap()
         })
         .into()
+    }
+
+    #[test]
+    fn batch_delete_cascades_values_and_pages() {
+        let mut db = connection();
+        for id in [1, 2, 3] {
+            save_record_page(&mut db, id, "Filled page").unwrap();
+        }
+        assert_eq!(delete_records(&mut db, &[1, 2]).unwrap(), 2);
+        assert_eq!(load(&mut db).unwrap().records.len(), 8);
+        for table in ["records", "record_values", "record_pages"] {
+            let count: i64 = db.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE {} IN (1, 2)", if table == "records" { "id" } else { "record_id" }),
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(count, 0, "{table}");
+        }
+        assert_eq!(get_record_page(&mut db, 3).unwrap(), "Filled page");
+    }
+
+    #[test]
+    fn batch_delete_counts_only_existing_records() {
+        let mut db = connection();
+        assert_eq!(delete_records(&mut db, &[1, 999, 2, 1, -1]).unwrap(), 2);
+        assert_eq!(load(&mut db).unwrap().records.len(), 8);
+        assert_eq!(delete_records(&mut db, &[999]).unwrap(), 0);
+    }
+
+    #[test]
+    fn empty_batch_delete_does_not_access_the_database() {
+        let mut db = Connection::open_in_memory().unwrap();
+        assert_eq!(delete_records(&mut db, &[]).unwrap(), 0);
+        assert_eq!(db.total_changes(), 0);
+    }
+
+    #[test]
+    fn batch_delete_failure_rolls_back_records_and_cascades() {
+        let mut db = connection();
+        save_record_page(&mut db, 1, "Keep page").unwrap();
+        let before = workspace_snapshot(&db);
+        let values_before: i64 = db.query_row("SELECT count(*) FROM record_values", [], |row| row.get(0)).unwrap();
+        db.execute_batch("CREATE TEMP TRIGGER reject_delete BEFORE DELETE ON records WHEN OLD.id = 2 BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+        assert!(delete_records(&mut db, &[1, 2]).is_err());
+        assert_eq!(workspace_snapshot(&db), before);
+        let values_after: i64 = db.query_row("SELECT count(*) FROM record_values", [], |row| row.get(0)).unwrap();
+        assert_eq!(values_after, values_before);
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "Keep page");
     }
 
     #[test]

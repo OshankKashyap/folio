@@ -34,11 +34,13 @@ export function hasOptions(type: ColumnType): boolean {
 }
 
 // Fixed positioning keeps editors outside the table's horizontal scroll clipping.
-export function floatingEditor(node: HTMLElement, { anchor, close }: { anchor: HTMLElement; close: () => void }) {
+export function floatingEditor(node: HTMLElement, { anchor, close, placement = "below" }: { anchor: HTMLElement; close: () => void; placement?: "above" | "below" }) {
   const position = () => {
     const rect = anchor.getBoundingClientRect();
-    node.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - node.offsetWidth - 8))}px`;
-    node.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - node.offsetHeight - 8))}px`;
+    const left = placement === "above" ? rect.left + rect.width / 2 - node.offsetWidth / 2 : rect.left;
+    const top = placement === "above" ? rect.top - node.offsetHeight - 16 : rect.bottom + 4;
+    node.style.left = `${Math.max(8, Math.min(left, window.innerWidth - node.offsetWidth - 8))}px`;
+    node.style.top = `${Math.max(8, Math.min(top, window.innerHeight - node.offsetHeight - 8))}px`;
   };
   const outside = (event: PointerEvent) => {
     if (!node.contains(event.target as Node) && !anchor.contains(event.target as Node)) close();

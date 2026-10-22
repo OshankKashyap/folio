@@ -20,11 +20,12 @@
   import Settings from "@lucide/svelte/icons/settings";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import Table2 from "@lucide/svelte/icons/table-2";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
   import X from "@lucide/svelte/icons/x";
   import { api, errorMessage, withDatabaseColumns } from "$lib/api";
   import { formatDate, propertyValue, visibleRecords } from "$lib/records";
   import { type Column, type ColumnOption, type ColumnType, type PropertyValue, type Layout, type RecordInput, type RecordItem, type SavedView, type WindowButtonOverride, type Workspace } from "$lib/types";
-  import { hasOptions } from "$lib/columns";
+  import { floatingEditor, hasOptions } from "$lib/columns";
   import ColumnHeader from "./ColumnHeader.svelte";
   import PropertyCell from "./PropertyCell.svelte";
   import OptionChip from "./OptionChip.svelte";
@@ -65,6 +66,17 @@
   const pageRecord = $derived(workspace.records.find((record) => record.id === pageRecordId));
   $effect(() => { if (pageRecordId !== null && !pageRecord) pageRecordId = null; });
   let selectedRow = $state<number | null>(null);
+  let selectedRecordIds = $state<Set<number>>(new Set());
+  let confirmRowDelete = $state(false);
+  $effect(() => {
+    if (busy || selectedRecordIds.size === 0) return;
+    const recordIds = new Set(workspace.records.map((record) => record.id));
+    const remaining = new Set([...selectedRecordIds].filter((id) => recordIds.has(id)));
+    if (remaining.size === selectedRecordIds.size) return;
+    if (remaining.size === 0) clearSelection();
+    else selectedRecordIds = remaining;
+  });
+  let deleteRowsButton = $state<HTMLButtonElement>(null!);
   let recordsElement = $state<HTMLDivElement>();
   let settingsButton = $state<HTMLButtonElement>();
   let newDatabaseOpen = $state(false);
@@ -103,12 +115,14 @@
   const boardGroups = $derived([...(statusColumn?.options ?? []).map((option) => ({ id: option.id as number | null, option })), { id: null, option: null }]);
   const rows = $derived(visibleRecords(workspace.records, view, columns));
   const selectedIndex = $derived(rows.findIndex((record) => record.id === selectedRow));
+  const allRowsSelected = $derived(rows.length > 0 && rows.every((record) => selectedRecordIds.has(record.id)));
 
   onMount(() => { void load(); void api.isDevBuild().then((value) => { devBuild = value; }).catch(() => {}); });
 
   async function load() {
     if (busy) return;
     loading = true;
+    clearSelection();
     uiState.windowButtonLayout = null;
     loadFailed = false;
     error = "";
@@ -353,6 +367,7 @@
   }
 
   function selectDatabase(id: number) {
+    clearSelection();
     databaseId = id;
     selectedRow = null;
     settingsOpen = false;
@@ -360,6 +375,7 @@
 
   function selectView(id: number) {
     if (!database) return;
+    clearSelection();
     selectedViews[database.id] = id;
     selectedRow = null;
   }
@@ -372,7 +388,10 @@
   async function updateView(changes: Partial<SavedView>) {
     if (!view || busy) return;
     const next = { ...view, ...changes };
-    await mutate(() => api.saveView(next));
+    if (await mutate(() => api.saveView(next))) {
+      // Filter and layout changes replace the visible table rows.
+      if (changes.filterActive !== undefined || changes.layout !== undefined) clearSelection();
+    }
   }
 
   async function createRecord() {
@@ -418,9 +437,44 @@
 
   async function deleteRecord(id: number) {
     if (await mutate(() => api.remove(id))) {
+      // Single-row deletion can remove a selected record.
+      clearSelection();
       editing = null;
       if (selectedRow === id) selectedRow = null;
       announcement = "Record deleted.";
+    }
+  }
+
+  function clearSelection(focus = false) {
+    selectedRecordIds = new Set();
+    confirmRowDelete = false;
+    if (focus) recordsElement?.querySelector("table")?.focus();
+  }
+
+  function toggleRow(id: number) {
+    confirmRowDelete = false;
+    const next = new Set(selectedRecordIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedRecordIds = next;
+  }
+
+  async function deleteSelectedRecords() {
+    if (busy || selectedRecordIds.size === 0) return;
+    const ids = new Set(selectedRecordIds);
+    confirmRowDelete = false;
+    busy = true;
+    error = "";
+    try {
+      const deleted = await api.deleteRecords([...ids]);
+      workspace = { ...workspace, records: workspace.records.filter((record) => !ids.has(record.id)) };
+      if (selectedRow !== null && ids.has(selectedRow)) selectedRow = null;
+      clearSelection(true);
+      announcement = `${deleted} rows deleted.`;
+    } catch (cause) {
+      error = errorMessage(cause);
+    } finally {
+      busy = false;
     }
   }
 
@@ -568,12 +622,13 @@
           <div class="records" class:compact={view.compact} bind:this={recordsElement} aria-busy={busy}>
             {#if view.layout === "table"}
               <div class="table-wrap">
-                <table>
-                  <thead><tr><th class="grip-cell" scope="col"><span class="sr-only">Reorder</span></th><th scope="col"><span class="column-icon">Aa</span> Name</th>{#each columns as column (column.id)}<th scope="col" class="dynamic-column"><ColumnHeader {column} {emojis} {busy} onCreate={createColumn} onRename={renameColumn} onDelete={deleteColumn} onOptions={setColumnOptions} /></th>{/each}<th scope="col"><ColumnHeader {emojis} {busy} onCreate={createColumn} onRename={renameColumn} onDelete={deleteColumn} onOptions={setColumnOptions} /></th></tr></thead>
+                <table tabindex="-1" aria-label="Records">
+                  <thead><tr><th class="grip-cell" scope="col"><input class="row-checkbox" type="checkbox" aria-label="Select all rows" checked={allRowsSelected} indeterminate={selectedRecordIds.size > 0 && !allRowsSelected} disabled={busy || rows.length === 0} onchange={() => { confirmRowDelete = false; selectedRecordIds = allRowsSelected ? new Set() : new Set(rows.map((record) => record.id)); }} /><span class="sr-only">Reorder</span></th><th scope="col"><span class="column-icon">Aa</span> Name</th>{#each columns as column (column.id)}<th scope="col" class="dynamic-column"><ColumnHeader {column} {emojis} {busy} onCreate={createColumn} onRename={renameColumn} onDelete={deleteColumn} onOptions={setColumnOptions} /></th>{/each}<th scope="col"><ColumnHeader {emojis} {busy} onCreate={createColumn} onRename={renameColumn} onDelete={deleteColumn} onOptions={setColumnOptions} /></th></tr></thead>
                   <tbody>
                     {#each rows as record (record.id)}
                       <tr data-record-id={record.id} class:drop-before={drag?.moved && drag.targetId === record.id && drag.recordId !== record.id && !drag.after} class:drop-after={drag?.moved && drag.targetId === record.id && drag.recordId !== record.id && drag.after}>
                         <td class="grip-cell">
+                          <input class="row-checkbox" type="checkbox" aria-label={`Select row ${record.name}`} checked={selectedRecordIds.has(record.id)} disabled={busy} onchange={() => toggleRow(record.id)} />
                           <span title={view.sortActive ? "Turn off sorting to reorder" : "Drag to reorder · click for move controls · use ↑ or ↓"}>
                             <button class="row-grip" data-grip={record.id} aria-label={`Reorder ${record.name}`} disabled={view.sortActive || busy} onclick={() => { if (suppressGripClick) { suppressGripClick = false; return; } selectedRow = record.id; }} onkeydown={(event) => gripKeydown(event, record.id)} onpointerdown={(event) => pointerDown(event, record.id)} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={() => drag = null} onlostpointercapture={() => drag = null}><GripVertical size={16} /></button>
                           </span>
@@ -623,6 +678,24 @@
         {/if}
       {/if}
     </div>
+    {#if view?.layout === "table" && selectedRecordIds.size > 0}
+      <div class="selection-overlay" style:left={`${sidebarOpen && viewportWidth > 500 ? renderedSidebarWidth : 0}px`}>
+        <div class="selection-bar" role="group" aria-label="Row selection">
+          <span>{selectedRecordIds.size} selected</span>
+          <button bind:this={deleteRowsButton} class="danger" disabled={busy} aria-expanded={confirmRowDelete} onclick={() => confirmRowDelete = !confirmRowDelete}><Trash2 size={15} />{busy ? "Deleting…" : "Delete"}</button>
+          <button disabled={busy} onclick={() => clearSelection(true)}><X size={15} />Clear</button>
+        </div>
+      </div>
+      {#if confirmRowDelete}
+        <div class="selection-confirm" role="dialog" aria-label="Delete rows" use:floatingEditor={{ anchor: deleteRowsButton, placement: "above", close: () => confirmRowDelete = false }}>
+          <p>Delete {selectedRecordIds.size} rows? This cannot be undone.</p>
+          <div class="selection-confirm-actions">
+            <button onclick={() => { confirmRowDelete = false; deleteRowsButton?.focus(); }}>Cancel</button>
+            <button class="danger" onclick={deleteSelectedRecords}>Delete rows</button>
+          </div>
+        </div>
+      {/if}
+    {/if}
     {#if pageRecord}
       {#key pageRecord.id}
         <RecordPage bind:this={pagePanel} record={pageRecord} onClose={closePage} />
@@ -728,7 +801,7 @@
   .tabs button.selected { color: var(--accent-text); border-bottom-color: var(--accent); }
   .toolbar { display: flex; align-items: center; gap: 8px; padding: 16px 0; flex-wrap: wrap; font-size: 13px; font-weight: 500; }
   button.on { color: var(--accent-text); background: var(--accent-soft); }
-  .table-wrap { overflow-x: auto; -webkit-user-select: none; user-select: none; }
+  .table-wrap { overflow-x: auto; padding-left: 28px; margin-left: -28px; -webkit-user-select: none; user-select: none; }
   .table-wrap :global(input) { -webkit-user-select: text; user-select: text; }
   table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 13px; font-weight: 500; }
   th { font-size: 14px; font-weight: 500; color: var(--sub); background: #1c1d21; text-align: left; padding: 10px 12px; border: 1px solid var(--line); }
@@ -743,8 +816,24 @@
   .name-cell { min-width: 210px; width: 35%; }
   button.record-name { padding: 0; border-radius: 2px; color: #e8e8ec; }
   button.record-name:hover:not(:disabled) { background: none; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
-  .grip-cell { width: 34px; padding: 3px 2px !important; border-right: 0; background: #18191c; }
-  .row-grip { padding: 6px; color: #81838f; cursor: grab; touch-action: none; }
+  .grip-cell { position: relative; width: 32px; min-width: 32px; max-width: 32px; padding: 3px 0 !important; border-right: 0; background: #18191c; }
+  th.grip-cell { background: #1c1d21; }
+  th.grip-cell + th { border-left: 0; }
+  .row-checkbox { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; }
+  td .row-checkbox { opacity: 0; pointer-events: none; transition: opacity .12s; }
+  tr:hover .row-checkbox, tr:focus-within .row-checkbox, .row-checkbox:checked { opacity: 1; pointer-events: auto; }
+  .selection-overlay { position: fixed; right: 0; bottom: 16px; z-index: 30; display: flex; justify-content: center; pointer-events: none; }
+  .selection-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; pointer-events: auto; font-size: 13px; background: #202125; border: 1px solid #42434d; border-radius: 8px; box-shadow: 0 12px 40px #0006; }
+  .selection-confirm { position: fixed; z-index: 40; width: 320px; padding: 16px; max-width: calc(100vw - 16px); background: #202125; border: 1px solid #42434d; border-radius: 8px; box-shadow: 0 12px 40px #0006; font-size: 12px; }
+  .selection-confirm p { margin: 0 0 16px; text-align: center; overflow-wrap: anywhere; }
+  .selection-confirm-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .selection-confirm-actions button { justify-content: center; padding: 8px 12px; border: 1px solid #42434d; background: #292a31; transition: background .12s; }
+  .selection-confirm-actions button:hover:not(:disabled) { background: #32333b; }
+  .selection-confirm-actions button.danger { border-color: #67434b; background: #38282c; }
+  .selection-confirm-actions button.danger:hover:not(:disabled) { background: #453035; }
+  .danger { color: #efadb4; }
+  .row-grip { position: absolute; left: -26px; top: 50%; transform: translateY(-50%); padding: 6px 4px; color: #81838f; cursor: grab; touch-action: none; }
+  .row-grip:focus-visible { outline-offset: -2px; }
   .row-grip:hover:not(:disabled) { color: var(--accent-text); background: var(--accent-soft); }
   .row-grip:active { cursor: grabbing; }
   tr.drop-before td { box-shadow: inset 0 2px var(--accent); }
@@ -766,9 +855,11 @@
   .settings select { appearance: none; min-width: 135px; padding: 7px 32px 7px 11px; background: #292a31; border: 1px solid #42434d; border-radius: 6px; color: #e4dfff; font-size: 12px; line-height: 20px; }
   .select-wrap { position: relative; display: inline-flex; }
   .select-wrap :global(svg) { position: absolute; right: 10px; top: 10px; pointer-events: none; color: #aaa6b9; }
-  .settings input[type="checkbox"] { appearance: none; flex-shrink: 0; width: 17px; height: 17px; border: 1px solid #555461; border-radius: 4px; background: #292a31; margin: 0; display: grid; place-content: center; cursor: pointer; }
-  .settings input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
-  .settings input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg); }
+  .settings input[type="checkbox"], .row-checkbox { appearance: none; flex-shrink: 0; border: 1px solid #555461; border-radius: 4px; background: #292a31; margin: 0; display: grid; place-content: center; cursor: pointer; }
+  .settings input[type="checkbox"] { width: 17px; height: 17px; }
+  .settings input[type="checkbox"]:checked, .row-checkbox:checked, .row-checkbox:indeterminate { background: var(--accent); border-color: var(--accent); }
+  .settings input[type="checkbox"]:checked::after, .row-checkbox:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg); }
+  .row-checkbox:indeterminate::after { content: ""; width: 8px; height: 2px; background: var(--accent-ink); }
   .list-row { display: flex; width: 100%; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); border-radius: 0; padding: 14px 5px; font-size: 13px; }
   .list-row > span { overflow-wrap: anywhere; }
   .list-row small { display: block; color: var(--sub); font-size: 11px; margin-top: 6px; }
@@ -786,6 +877,7 @@
   @media (max-width: 700px) {
     .workspace-shell.sidebar-open { grid-template-columns: 165px minmax(0, 1fr); }
     .content { padding: 22px 16px; }
+    .table-wrap { margin-left: -12px; }
     .board { grid-template-columns: 1fr; }
     .chrome { padding: 0 12px; }
     .local-indicator { display: none; }

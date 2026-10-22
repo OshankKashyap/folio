@@ -270,6 +270,19 @@ async fn delete_record(database: State<'_, Database>, id: i64) -> Result<Workspa
 }
 
 #[tauri::command]
+async fn delete_records(
+    database: State<'_, Database>,
+    record_ids: Vec<i64>,
+) -> Result<usize, AppError> {
+    if record_ids.is_empty() {
+        return Ok(0);
+    }
+    database
+        .run(move |connection| db::delete_records(connection, &record_ids))
+        .await
+}
+
+#[tauri::command]
 async fn update_view(
     database: State<'_, Database>,
     view: SavedView,
@@ -419,6 +432,7 @@ pub fn run() {
             add_inline_option,
             update_record,
             delete_record,
+            delete_records,
             get_record_page,
             save_record_page,
             update_view,

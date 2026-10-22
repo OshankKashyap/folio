@@ -86,6 +86,9 @@ export const api = {
   remove(id: number): Promise<Workspace> {
     return invokeWorkspace("delete_record", { id });
   },
+  deleteRecords(recordIds: number[]): Promise<number> {
+    return invoke("delete_records", { recordIds });
+  },
   getRecordPage(recordId: number): Promise<RecordPageContent> {
     return invoke("get_record_page", { recordId });
   },

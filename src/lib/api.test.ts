@@ -62,6 +62,12 @@ it("creates records without a status and updates only the title", async () => {
   expect(invoke).toHaveBeenLastCalledWith("update_record", { input: { id: 2, name: "Renamed" } });
 });
 
+it("passes batch record IDs through the typed boundary and returns the deleted count", async () => {
+  vi.mocked(invoke).mockResolvedValueOnce(2);
+  expect(await api.deleteRecords([1, 2, 999])).toBe(2);
+  expect(invoke).toHaveBeenCalledWith("delete_records", { recordIds: [1, 2, 999] });
+});
+
 it("passes all column mutations through the camelCase boundary", async () => {
   const options = [{ id: 7, label: "Ready", emoji: "⭐", color: "blue" as const }];
   await api.createColumn(1, "State", "status", options);

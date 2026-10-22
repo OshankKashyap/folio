@@ -29,7 +29,7 @@ vi.mock("$lib/editor", () => ({
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), createRecord: vi.fn(), createColumn: vi.fn(), renameColumn: vi.fn(), deleteColumn: vi.fn(), setColumnOptions: vi.fn(), setRecordValue: vi.fn(), addInlineOption: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), setMinimizeToTray: vi.fn(), setAutostart: vi.fn(), isDevBuild: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), createRecord: vi.fn(), createColumn: vi.fn(), renameColumn: vi.fn(), deleteColumn: vi.fn(), setColumnOptions: vi.fn(), setRecordValue: vi.fn(), addInlineOption: vi.fn(), update: vi.fn(), remove: vi.fn(), deleteRecords: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), setMinimizeToTray: vi.fn(), setAutostart: vi.fn(), isDevBuild: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
 });
 
 let data: WorkspaceData;
@@ -89,6 +89,150 @@ async function openWorkspace() {
   await screen.findByRole("heading", { name: "Projects" });
   return user;
 }
+
+describe("table row selection", () => {
+  it("keeps selection controls compact and blends the gutter into the table header", () => {
+    const gutter = workspaceSource.split(".grip-cell {")[1].split("}")[0];
+    expect(gutter).toContain("width: 32px;");
+    expect(gutter).toContain("max-width: 32px;");
+    expect(gutter).toContain("padding: 3px 0 !important;");
+    expect(workspaceSource.split("th.grip-cell {")[1].split("}")[0]).toContain("background: #1c1d21;");
+    expect(workspaceSource.split("th.grip-cell + th {")[1].split("}")[0]).toContain("border-left: 0;");
+    const checkbox = workspaceSource.split(".row-checkbox {")[1].split("}")[0];
+    expect(checkbox).toContain("position: absolute;");
+    expect(checkbox).toContain("left: 8px;");
+    expect(checkbox).toContain("width: 14px;");
+    expect(workspaceSource).toContain('.settings input[type="checkbox"], .row-checkbox { appearance: none;');
+    expect(workspaceSource).toContain(".row-checkbox:indeterminate::after");
+    expect(workspaceSource.split(".row-grip {")[1].split("}")[0]).toContain("padding: 6px 4px;");
+  });
+
+  it("positions drag grips outside the table in an unclipped scroll gutter", () => {
+    const grip = workspaceSource.split(".row-grip {")[1].split("}")[0];
+    expect(grip).toContain("position: absolute;");
+    expect(grip).toContain("left: -26px;");
+    expect(grip).toContain("top: 50%;");
+    const scroll = workspaceSource.split(".table-wrap {")[1].split("}")[0];
+    expect(scroll).toContain("overflow-x: auto;");
+    expect(scroll).toContain("padding-left: 28px;");
+    expect(scroll).toContain("margin-left: -28px;");
+    expect(workspaceSource.split("@media (max-width: 700px)")[1]).toContain(".table-wrap { margin-left: -12px; }");
+  });
+
+  beforeEach(() => {
+    vi.mocked(api.deleteRecords).mockImplementation(async (ids) => {
+      const before = data.records.length;
+      data.records = data.records.filter((record) => !ids.includes(record.id));
+      return before - data.records.length;
+    });
+  });
+
+  it("selects individual rows and toggles all with an indeterminate header", async () => {
+    const user = await openWorkspace();
+    const header = screen.getByRole("checkbox", { name: "Select all rows" }) as HTMLInputElement;
+    const row = screen.getByRole("checkbox", { name: "Select row Network monitor" }) as HTMLInputElement;
+    expect(header.checked).toBe(false);
+    expect(header.indeterminate).toBe(false);
+    await user.click(row);
+    expect(row.checked).toBe(true);
+    expect(header.indeterminate).toBe(true);
+    expect(screen.getByText("1 selected")).toBeTruthy();
+    await user.click(header);
+    expect(header.checked).toBe(true);
+    expect(header.indeterminate).toBe(false);
+    expect(screen.getByText("6 selected")).toBeTruthy();
+    await user.click(header);
+    expect(screen.queryByRole("group", { name: "Row selection" })).toBeNull();
+    expect(header.checked).toBe(false);
+    expect(header.indeterminate).toBe(false);
+  });
+
+  it("cancels without deleting, then confirms and closes a deleted record's page", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getAllByRole("button", { name: "Open page" })[0]);
+    await screen.findByRole("textbox", { name: "Page notes" });
+    await user.click(screen.getByRole("checkbox", { name: "Select row Network monitor" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select row Database workspace" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.getByText("Delete 2 rows? This cannot be undone.")).toBeTruthy();
+    expect(workspaceSource.split(".selection-confirm p {")[1].split("}")[0]).toContain("text-align: center;");
+    const actions = screen.getByRole("button", { name: "Cancel" }).parentElement!;
+    expect(actions.classList.contains("selection-confirm-actions")).toBe(true);
+    expect(within(actions).getAllByRole("button").map((button) => button.textContent)).toEqual(["Cancel", "Delete rows"]);
+    const actionStyle = workspaceSource.split(".selection-confirm-actions {")[1].split("}")[0];
+    expect(actionStyle).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(actionStyle).toContain("gap: 8px;");
+    expect(workspaceSource.split(".selection-confirm-actions button {")[1].split("}")[0]).toContain("background: #292a31;");
+    expect(workspaceSource.split(".selection-confirm-actions button:hover:not(:disabled) {")[1].split("}")[0]).toContain("background: #32333b;");
+    expect(workspaceSource.split(".selection-confirm-actions button.danger {")[1].split("}")[0]).toContain("background: #38282c;");
+    expect(workspaceSource.split(".selection-confirm-actions button.danger:hover:not(:disabled) {")[1].split("}")[0]).toContain("background: #453035;");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(api.deleteRecords).not.toHaveBeenCalled();
+    expect(screen.getByText("2 selected")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(within(screen.getByRole("dialog", { name: "Delete rows" })).getByRole("button", { name: "Delete rows" }));
+    await waitFor(() => expect(api.deleteRecords).toHaveBeenCalledWith([1, 2]));
+    expect(screen.queryByRole("checkbox", { name: "Select row Network monitor" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Select row Database workspace" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Page notes" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Row selection" })).toBeNull();
+  });
+
+  it("keeps rows and selection unchanged on failure and disables selection while deleting", async () => {
+    const user = await openWorkspace();
+    let reject!: (cause: Error) => void;
+    vi.mocked(api.deleteRecords).mockReturnValueOnce(new Promise((_resolve, fail) => reject = fail));
+    const row = screen.getByRole("checkbox", { name: "Select row Network monitor" }) as HTMLInputElement;
+    await user.click(row);
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete rows" }));
+    expect(row.disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Deleting…" }).hasAttribute("disabled")).toBe(true);
+    reject(new Error("Could not delete rows."));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not delete rows.");
+    expect(row.checked).toBe(true);
+    expect(row.disabled).toBe(false);
+    expect(screen.getByText("1 selected")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Network monitor" })).toBeTruthy();
+  });
+
+  it("preserves selection after a successful cell edit", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("checkbox", { name: "Select row Network monitor" }));
+    await user.click(screen.getByRole("button", { name: "Owner for Network monitor" }));
+    const input = screen.getByLabelText("Edit Owner for Network monitor");
+    await user.clear(input);
+    await user.type(input, "Updated owner{Enter}");
+    await waitFor(() => expect(api.setRecordValue).toHaveBeenCalledWith(1, 13, { Text: "Updated owner" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Owner for Network monitor" }).textContent).toContain("Updated owner"));
+    expect(within(screen.getByRole("group", { name: "Row selection" })).getByText("1 selected")).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: "Select row Network monitor" }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("clears with table focus, on database switches, and on visible-row changes but not sorting", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("checkbox", { name: "Select row Network monitor" }));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(document.activeElement).toBe(screen.getByRole("table", { name: "Records" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select row Network monitor" }));
+    await user.click(screen.getByRole("button", { name: "Reading list" }));
+    expect(screen.queryByRole("group", { name: "Row selection" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Projects" }));
+    const row = screen.getByRole("checkbox", { name: "Select row Network monitor" }) as HTMLInputElement;
+    expect(row.checked).toBe(false);
+    await user.click(row);
+    await user.click(screen.getByRole("button", { name: "Sort" }));
+    expect(within(screen.getByRole("group", { name: "Row selection" })).getByText("1 selected")).toBeTruthy();
+    expect(row.checked).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Row selection" })).toBeNull());
+    expect(row.checked).toBe(false);
+    await user.click(row);
+    await user.click(screen.getByRole("button", { name: "By status" }));
+    expect(screen.queryByRole("checkbox", { name: /Select row/ })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Row selection" })).toBeNull();
+  });
+});
 
 describe("dynamic columns", () => {
   it("keeps column headings above the readable row text size", () => {
@@ -314,6 +458,40 @@ describe("dynamic columns", () => {
     expect(screen.queryByRole("button", { name: "Column Failed column" })).toBeNull();
     expect(screen.getByRole("button", { name: "Column Owner" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Owner for Network monitor" })).toHaveProperty("textContent", "Oshank");
+  });
+
+  it.each([false, true])("prunes deleted row IDs after removing an option (surviving selection: %s)", async (selectSurvivor) => {
+    const saveOptions = vi.mocked(api.setColumnOptions).getMockImplementation()!;
+    vi.mocked(api.setColumnOptions).mockImplementationOnce(async (id, options) => {
+      data.records = data.records.filter((record) => {
+        const value = record.values[String(id)];
+        return !value || options.some((option) => option.id === JSON.parse(value).Select);
+      });
+      return saveOptions(id, options);
+    });
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("checkbox", { name: "Select row Network monitor" }));
+    if (selectSurvivor) await user.click(screen.getByRole("checkbox", { name: "Select row Portfolio refresh" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.getByRole("dialog", { name: "Delete rows" })).toBeTruthy();
+
+    // Keyboard activation keeps the confirmation open until selection pruning closes it.
+    for (const name of ["Column Priority", "Edit options", "Remove High", "Save options"]) {
+      screen.getByRole("button", { name }).focus();
+      await user.keyboard("{Enter}");
+    }
+    await waitFor(() => expect(screen.queryByRole("checkbox", { name: "Select row Network monitor" })).toBeNull());
+    expect(api.setColumnOptions).toHaveBeenCalledWith(11, expect.not.arrayContaining([expect.objectContaining({ id: 1 })]));
+    if (selectSurvivor) {
+      expect(within(screen.getByRole("group", { name: "Row selection" })).getByText("1 selected")).toBeTruthy();
+      expect((screen.getByRole("checkbox", { name: "Select row Portfolio refresh" }) as HTMLInputElement).checked).toBe(true);
+    } else {
+      expect(screen.queryByRole("group", { name: "Row selection" })).toBeNull();
+      expect(screen.queryByRole("dialog", { name: "Delete rows" })).toBeNull();
+      await user.click(screen.getByRole("checkbox", { name: "Select row Portfolio refresh" }));
+      expect(within(screen.getByRole("group", { name: "Row selection" })).getByText("1 selected")).toBeTruthy();
+      expect(screen.queryByRole("dialog", { name: "Delete rows" })).toBeNull();
+    }
   });
 
   it("edits option labels, emoji from the 48-item grid, colors, and removals as a whole list", async () => {
