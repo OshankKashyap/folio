@@ -5,11 +5,13 @@
   import { api } from "$lib/api";
   import type { WindowButtonOverride } from "$lib/types";
 
-  let { fontFamily, windowButtonLayout, minimizeToTray, autostart, devBuild, busy, error, onSave, onSaveWindowButtonLayout, onSaveMinimizeToTray, onSaveAutostart, onClose }: {
+  let { fontFamily, windowButtonLayout, minimizeToTray, autostart, gpuAcceleration, linux, devBuild, busy, error, onSave, onSaveWindowButtonLayout, onSaveMinimizeToTray, onSaveAutostart, onSaveGpuAcceleration, onClose }: {
     fontFamily: string;
     windowButtonLayout: WindowButtonOverride;
     minimizeToTray: boolean;
     autostart: boolean;
+    gpuAcceleration: boolean;
+    linux: boolean;
     devBuild: boolean;
     busy: boolean;
     error: string;
@@ -17,6 +19,7 @@
     onSaveWindowButtonLayout: (layout: WindowButtonOverride) => Promise<boolean>;
     onSaveMinimizeToTray: (enabled: boolean) => Promise<boolean>;
     onSaveAutostart: (enabled: boolean) => Promise<boolean>;
+    onSaveGpuAcceleration: (enabled: boolean) => Promise<boolean>;
     onClose: () => void;
   } = $props();
 
@@ -28,6 +31,7 @@
   let buttonLayout = $state(untrack(() => windowButtonLayout));
   let trayEnabled = $state(untrack(() => minimizeToTray));
   let autostartEnabled = $state(untrack(() => autostart));
+  let gpuEnabled = $state(untrack(() => gpuAcceleration));
   let detectedSide = $state("");
   let category = $state("interface");
   let timer: ReturnType<typeof setTimeout>;
@@ -81,6 +85,11 @@
     autostartEnabled = enabled;
     if (!await onSaveAutostart(enabled)) autostartEnabled = autostart;
   }
+
+  async function updateGpuAcceleration(enabled: boolean) {
+    gpuEnabled = enabled;
+    if (!await onSaveGpuAcceleration(enabled)) gpuEnabled = gpuAcceleration;
+  }
 </script>
 
 <dialog bind:this={dialog} aria-labelledby="settings-heading" oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={(event) => { if (event.target === dialog) onClose(); }}>
@@ -115,6 +124,10 @@
       <p id="tray-hint">Closing Folio keeps it running in the system tray.</p>
       <label class="tray-setting"><input type="checkbox" checked={autostartEnabled} disabled={busy || devBuild} aria-describedby="autostart-hint" onchange={(event) => { void updateAutostart(event.currentTarget.checked); }} />Start minimized in tray on login</label>
       <p id="autostart-hint">{devBuild ? "Autostart is unavailable in development builds." : "Folio starts in the background when you log in, with no window."}</p>
+      {#if linux}
+        <label class="tray-setting"><input type="checkbox" checked={gpuEnabled} disabled={busy} aria-describedby="gpu-hint" onchange={(event) => { void updateGpuAcceleration(event.currentTarget.checked); }} />GPU acceleration</label>
+        <p id="gpu-hint">Render the interface on the GPU for smoother scrolling and animation. Takes effect after restarting Folio.</p>
+      {/if}
       {#if error}<p class="save-error" role="alert">{error}</p>{/if}
     </section>
   </div>

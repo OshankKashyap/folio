@@ -24,6 +24,17 @@ it("passes the build mode through the typed command boundary", async () => {
   expect(invoke).toHaveBeenCalledWith("is_dev_build");
 });
 
+it.each([false, true])("passes GPU acceleration (%j) through the typed command boundary", async (gpuAcceleration) => {
+  await api.setGpuAcceleration(gpuAcceleration);
+  expect(invoke).toHaveBeenCalledWith("set_gpu_acceleration", { gpuAcceleration });
+});
+
+it.each([false, true])("returns the Linux platform flag (%j)", async (linux) => {
+  vi.mocked(invoke).mockResolvedValueOnce(linux);
+  expect(await api.isLinux()).toBe(linux);
+  expect(invoke).toHaveBeenCalledWith("is_linux");
+});
+
 it.each([null, 280])("passes sidebar width (%j) through the typed command boundary", async (sidebarWidth) => {
   await api.setSidebarWidth(sidebarWidth);
   expect(invoke).toHaveBeenCalledWith("set_sidebar_width", { sidebarWidth });

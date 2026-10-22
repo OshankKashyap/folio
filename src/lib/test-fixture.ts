@@ -16,7 +16,7 @@ export function fixture(): Workspace {
     },
   });
   return {
-    settings: { name: "Test workspace", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false },
+    settings: { name: "Test workspace", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false, gpuAcceleration: true },
     databases: [
       { id: 1, name: "Projects", description: "A little structure for everything you’re building.", icon: "layers", emoji: "", customIcon: null, columns: columns.filter((column) => column.databaseId === 1) },
       { id: 2, name: "Reading list", description: "Good ideas start with a good book.", icon: "book", emoji: "", customIcon: null, columns: columns.filter((column) => column.databaseId === 2) },

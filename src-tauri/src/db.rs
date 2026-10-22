@@ -86,7 +86,7 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 10 {
+    if version > 11 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
@@ -120,6 +120,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 10 {
         transaction.execute_batch(include_str!("../migrations/010_dynamic_columns.sql"))?;
+    }
+    if version < 11 {
+        transaction.execute_batch(include_str!("../migrations/011_gpu_acceleration.sql"))?;
     }
     transaction.commit()?;
     Ok(())
@@ -175,6 +178,7 @@ pub struct WorkspaceSettings {
     window_button_layout: String,
     minimize_to_tray: bool,
     autostart: bool,
+    gpu_acceleration: bool,
 }
 
 #[derive(Serialize)]
@@ -189,7 +193,7 @@ pub struct Workspace {
 pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
     let settings = connection
         .query_row(
-            "SELECT name, accent_color, font_family, sidebar_width, window_button_layout, minimize_to_tray, autostart FROM workspace_settings WHERE id = 1",
+            "SELECT name, accent_color, font_family, sidebar_width, window_button_layout, minimize_to_tray, autostart, gpu_acceleration FROM workspace_settings WHERE id = 1",
             [],
             |row| {
                 Ok(WorkspaceSettings {
@@ -200,6 +204,7 @@ pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
                     window_button_layout: row.get(4)?,
                     minimize_to_tray: row.get(5)?,
                     autostart: row.get(6)?,
+                    gpu_acceleration: row.get(7)?,
                 })
             },
         )
@@ -371,6 +376,31 @@ pub fn get_autostart(connection: &mut Connection) -> Result<bool, AppError> {
         )
         .optional()?
         .unwrap_or(false))
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub fn read_gpu_acceleration(path: &Path) -> rusqlite::Result<Option<bool>> {
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(Duration::ZERO)?;
+    connection.query_row(
+        "SELECT gpu_acceleration FROM workspace_settings WHERE id = 1",
+        [],
+        |row| row.get(0),
+    ).optional()
+}
+
+pub fn set_gpu_acceleration(
+    connection: &mut Connection,
+    gpu_acceleration: bool,
+) -> Result<Workspace, AppError> {
+    if connection.execute(
+        "UPDATE workspace_settings SET gpu_acceleration = ?1 WHERE id = 1",
+        [gpu_acceleration],
+    )? == 0
+    {
+        return Err(AppError::missing());
+    }
+    load(connection)
 }
 
 pub fn set_autostart(connection: &mut Connection, autostart: bool) -> Result<Workspace, AppError> {
@@ -811,7 +841,7 @@ mod tests {
         }
         let fields: Vec<String> = db.prepare("PRAGMA table_info(records)").unwrap().query_map([], |row| row.get(1)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         for old in ["status", "priority", "due_date", "owner"] { assert!(!fields.iter().any(|field| field == old)); }
-        assert_eq!(db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 10);
+        assert_eq!(db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 11);
         let before = serde_json::to_value(workspace).unwrap();
         migrate(&mut db).unwrap();
         assert_eq!(serde_json::to_value(load(&mut db).unwrap()).unwrap(), before);
@@ -840,7 +870,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -872,7 +902,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -906,7 +936,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -967,10 +997,63 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
+    }
+
+    #[test]
+    fn gpu_migration_is_additive_and_guard_agrees() {
+        let mut db = connection();
+        setup_workspace(&mut db, "Keep me", "#91baff").unwrap();
+        set_autostart(&mut db, true).unwrap();
+        save_record_page(&mut db, 1, "Keep these notes").unwrap();
+        let before = serde_json::to_value(load(&mut db).unwrap()).unwrap();
+        // Reconstruct the version-10 schema with populated workspace/column/record tables.
+        db.execute_batch("ALTER TABLE workspace_settings DROP COLUMN gpu_acceleration; PRAGMA user_version = 10;").unwrap();
+        migrate(&mut db).unwrap();
+        assert_eq!(serde_json::to_value(load(&mut db).unwrap()).unwrap(), before);
+        assert_eq!(get_record_page(&mut db, 1).unwrap(), "Keep these notes");
+        assert_eq!(db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 11);
+        migrate(&mut db).unwrap(); // The migration's version must also pass the startup guard.
+        assert_eq!(serde_json::to_value(load(&mut db).unwrap()).unwrap(), before);
+    }
+
+    #[test]
+    fn gpu_acceleration_round_trips_and_defaults_to_true() {
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        assert_eq!(set_gpu_acceleration(&mut db, false).err().unwrap().code, "not_found");
+        assert!(setup_workspace(&mut db, "Home", "#91baff").unwrap().settings.unwrap().gpu_acceleration);
+        for enabled in [false, true] {
+            let workspace = set_gpu_acceleration(&mut db, enabled).unwrap();
+            assert_eq!(serde_json::to_value(workspace).unwrap()["settings"]["gpuAcceleration"], enabled);
+            assert_eq!(load(&mut db).unwrap().settings.unwrap().gpu_acceleration, enabled);
+        }
+    }
+
+    #[test]
+    fn early_gpu_read_is_read_only_and_handles_missing_storage() {
+        let path = std::env::temp_dir().join(format!("folio-gpu-test-{}.sqlite", std::process::id()));
+        assert!(!path.exists());
+        assert!(read_gpu_acceleration(&path).is_err());
+        assert!(!path.exists());
+        {
+            let mut db = Connection::open(&path).unwrap();
+            assert!(read_gpu_acceleration(&path).is_err()); // Missing table.
+            migrate(&mut db).unwrap();
+            assert_eq!(read_gpu_acceleration(&path).unwrap(), None);
+            setup_workspace(&mut db, "Home", "#91baff").unwrap();
+            for enabled in [false, true] {
+                set_gpu_acceleration(&mut db, enabled).unwrap();
+                assert_eq!(read_gpu_acceleration(&path).unwrap(), Some(enabled));
+            }
+            db.execute_batch("ALTER TABLE workspace_settings DROP COLUMN gpu_acceleration; PRAGMA user_version = 10;").unwrap();
+            assert!(read_gpu_acceleration(&path).is_err()); // Unmigrated workspace.
+            assert_eq!(db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 10);
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1114,7 +1197,7 @@ mod tests {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                10
+                11
             );
             save_record_page(&mut db, 1, "Persist me").unwrap();
         }
@@ -1153,13 +1236,13 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        // Version 11 is one beyond the current maximum of 10 → must be rejected.
-        db.pragma_update(None, "user_version", 11).unwrap();
+        // Version 12 is one beyond the current maximum of 11 → must be rejected.
+        db.pragma_update(None, "user_version", 12).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -1426,7 +1509,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         migrate(&mut db).unwrap();
         assert_eq!(snapshot(&db), before);

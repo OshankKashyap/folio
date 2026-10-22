@@ -56,6 +56,7 @@
   let preferencesOpen = $state(false);
   let fontFamily = $state("");
   let devBuild = $state(false);
+  let linux = $state(false);
   let databaseId = $state<number | null>(null);
   let selectedViews = $state<Record<number, number>>({});
   let editing = $state<RecordItem | null>(null);
@@ -117,7 +118,7 @@
   const selectedIndex = $derived(rows.findIndex((record) => record.id === selectedRow));
   const allRowsSelected = $derived(rows.length > 0 && rows.every((record) => selectedRecordIds.has(record.id)));
 
-  onMount(() => { void load(); void api.isDevBuild().then((value) => { devBuild = value; }).catch(() => {}); });
+  onMount(() => { void load(); void api.isDevBuild().then((value) => { devBuild = value; }).catch(() => {}); void api.isLinux().then((value) => { linux = value; }).catch(() => {}); });
 
   async function load() {
     if (busy) return;
@@ -250,6 +251,10 @@
 
   async function saveAutostart(enabled: boolean): Promise<boolean> {
     return mutate(() => api.setAutostart(enabled));
+  }
+
+  async function saveGpuAcceleration(enabled: boolean): Promise<boolean> {
+    return mutate(() => api.setGpuAcceleration(enabled));
   }
 
   function resizeSidebar(width: number) {
@@ -714,7 +719,7 @@
 {/if}
 
 {#if preferencesOpen}
-  <SettingsPanel {fontFamily} windowButtonLayout={workspace.settings?.windowButtonLayout ?? ""} minimizeToTray={workspace.settings?.minimizeToTray ?? false} autostart={workspace.settings?.autostart ?? false} {devBuild} {busy} {error} onSave={saveFont} onSaveWindowButtonLayout={saveWindowButtonLayout} onSaveMinimizeToTray={saveMinimizeToTray} onSaveAutostart={saveAutostart} onClose={closePreferences} />
+  <SettingsPanel {fontFamily} windowButtonLayout={workspace.settings?.windowButtonLayout ?? ""} minimizeToTray={workspace.settings?.minimizeToTray ?? false} autostart={workspace.settings?.autostart ?? false} gpuAcceleration={workspace.settings?.gpuAcceleration ?? true} {linux} {devBuild} {busy} {error} onSave={saveFont} onSaveWindowButtonLayout={saveWindowButtonLayout} onSaveMinimizeToTray={saveMinimizeToTray} onSaveAutostart={saveAutostart} onSaveGpuAcceleration={saveGpuAcceleration} onClose={closePreferences} />
 {/if}
 
 {#if newDatabaseOpen}

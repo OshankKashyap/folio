@@ -74,6 +74,12 @@ export const api = {
   isDevBuild(): Promise<boolean> {
     return invoke("is_dev_build");
   },
+  setGpuAcceleration(gpuAcceleration: boolean): Promise<Workspace> {
+    return invokeWorkspace("set_gpu_acceleration", { gpuAcceleration });
+  },
+  isLinux(): Promise<boolean> {
+    return invoke("is_linux");
+  },
   getDefaultFont(): Promise<string> {
     return invoke("get_default_font");
   },

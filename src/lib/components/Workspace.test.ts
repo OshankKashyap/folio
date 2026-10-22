@@ -29,7 +29,7 @@ vi.mock("$lib/editor", () => ({
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), createRecord: vi.fn(), createColumn: vi.fn(), renameColumn: vi.fn(), deleteColumn: vi.fn(), setColumnOptions: vi.fn(), setRecordValue: vi.fn(), addInlineOption: vi.fn(), update: vi.fn(), remove: vi.fn(), deleteRecords: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), setMinimizeToTray: vi.fn(), setAutostart: vi.fn(), isDevBuild: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), createRecord: vi.fn(), createColumn: vi.fn(), renameColumn: vi.fn(), deleteColumn: vi.fn(), setColumnOptions: vi.fn(), setRecordValue: vi.fn(), addInlineOption: vi.fn(), update: vi.fn(), remove: vi.fn(), deleteRecords: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), setMinimizeToTray: vi.fn(), setAutostart: vi.fn(), setGpuAcceleration: vi.fn(), isLinux: vi.fn(), isDevBuild: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
 });
 
 let data: WorkspaceData;
@@ -55,6 +55,11 @@ beforeEach(() => {
     return structuredClone(data);
   });
   vi.mocked(api.isDevBuild).mockResolvedValue(false);
+  vi.mocked(api.isLinux).mockResolvedValue(true);
+  vi.mocked(api.setGpuAcceleration).mockImplementation(async (gpuAcceleration) => {
+    data.settings!.gpuAcceleration = gpuAcceleration;
+    return structuredClone(data);
+  });
   vi.mocked(api.pickDatabaseIcon).mockResolvedValue(null);
   vi.mocked(api.getRecordPage).mockResolvedValue("# Notes");
   vi.mocked(api.saveRecordPage).mockResolvedValue("2026-10-17T12:00:00.000Z");
@@ -1023,7 +1028,7 @@ describe("Folio workspace", () => {
 
   it.each([["Teal", "#5ecfca"], ["Amber", "#f5cd6f"]])("saves the %s accent preset", async (label, accentColor) => {
     data = { settings: null, databases: [], columns: [], views: [], records: [] };
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false, gpuAcceleration: true } });
     const user = userEvent.setup();
     render(Workspace);
     await user.type(await screen.findByLabelText("Workspace name"), "Home");
@@ -1036,7 +1041,7 @@ describe("Folio workspace", () => {
   it("sets up an empty workspace and creates its first database without sample records", async () => {
     data = { settings: null, databases: [], columns: [], views: [], records: [] };
     vi.mocked(api.setup).mockImplementation(async (name, accentColor) => {
-      data.settings = { name, accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false };
+      data.settings = { name, accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false, gpuAcceleration: true };
       return structuredClone(data);
     });
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
@@ -1077,14 +1082,14 @@ describe("Folio workspace", () => {
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save workspace.");
     expect(name).toHaveProperty("value", "Home");
-    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false } });
+    vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor: "#123456", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false, gpuAcceleration: true } });
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
     await screen.findByRole("heading", { name: "Welcome to Home" });
     expect(api.setup).toHaveBeenLastCalledWith("Home", "#123456");
   });
 
   it("shows database creation errors without leaving the empty workspace", async () => {
-    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false }, databases: [], columns: [], views: [], records: [] };
+    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false, gpuAcceleration: true }, databases: [], columns: [], views: [], records: [] };
     vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
     const user = userEvent.setup();
     render(Workspace);
@@ -1315,6 +1320,57 @@ describe("Folio workspace", () => {
     const checkbox = screen.getByRole("checkbox", { name: "Start minimized in tray on login" });
     await waitFor(() => expect(checkbox).toHaveProperty("disabled", true));
     expect(screen.getByText("Autostart is unavailable in development builds.")).toBeTruthy();
+  });
+
+  it.each([false, true])("saves GPU acceleration by keyboard and persists on remount (%s)", async (enabled) => {
+    data.settings!.gpuAcceleration = enabled;
+    vi.mocked(api.isDevBuild).mockResolvedValue(true);
+    const mounted = render(Workspace);
+    const user = userEvent.setup();
+    await screen.findByRole("heading", { name: "Projects" });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    const checkbox = screen.getByRole("checkbox", { name: "GPU acceleration" });
+    expect(checkbox).toHaveProperty("checked", enabled);
+    expect(checkbox).toHaveProperty("disabled", false);
+    expect(screen.getByText(/Takes effect after restarting Folio/)).toBeTruthy();
+    checkbox.focus();
+    await user.keyboard(" ");
+    await waitFor(() => expect(api.setGpuAcceleration).toHaveBeenCalledExactlyOnceWith(!enabled));
+    expect(data.settings!.gpuAcceleration).toBe(!enabled);
+    mounted.unmount();
+    render(Workspace);
+    await screen.findByRole("heading", { name: "Projects" });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    expect(screen.getByRole("checkbox", { name: "GPU acceleration" })).toHaveProperty("checked", !enabled);
+  });
+
+  it("does not render GPU acceleration on non-Linux platforms", async () => {
+    vi.mocked(api.isLinux).mockResolvedValue(false);
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    expect(screen.queryByLabelText("GPU acceleration")).toBeNull();
+    expect(screen.queryByText(/Takes effect after restarting Folio/)).toBeNull();
+  });
+
+  it.each([false, true])("reverts a failed GPU save to %s and disables the checkbox while busy", async (enabled) => {
+    data.settings!.gpuAcceleration = enabled;
+    let failSave!: (error: unknown) => void;
+    vi.mocked(api.setGpuAcceleration).mockImplementationOnce(() => new Promise((_, reject) => { failSave = reject; }));
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    const checkbox = screen.getByRole("checkbox", { name: "GPU acceleration" });
+    await user.click(checkbox);
+    expect(checkbox).toHaveProperty("checked", !enabled);
+    expect(checkbox).toHaveProperty("disabled", true);
+    failSave({ message: "Could not save GPU setting." });
+    expect(await within(screen.getByRole("dialog")).findByRole("alert")).toHaveProperty("textContent", "Could not save GPU setting.");
+    expect(checkbox).toHaveProperty("checked", enabled);
+    expect(checkbox).toHaveProperty("disabled", false);
+    expect(data.settings!.gpuAcceleration).toBe(enabled);
   });
 
   it("saves window button overrides live and restores the cached detected order in Auto", async () => {

@@ -22,6 +22,9 @@ GNOME requires the AppIndicator extension to show tray icons; keep this setting 
 Settings → System also offers “Start minimized in tray on login” (off by default). When on, Folio registers
 with the OS to launch hidden in the tray at login. This setting is disabled in development builds.
 
+On Linux, Settings → System offers “GPU acceleration” (on by default). Turning it off disables
+WebKit accelerated compositing; turning it on leaves WebKit defaults in control. Changes apply after restarting Folio.
+
 ## Prerequisites
 
 - Node.js 22.12+ (or a newer supported LTS) and npm

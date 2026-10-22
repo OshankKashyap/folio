@@ -93,6 +93,21 @@ async fn is_dev_build() -> bool {
     tauri::is_dev()
 }
 
+#[tauri::command]
+async fn is_linux() -> bool {
+    cfg!(target_os = "linux")
+}
+
+#[tauri::command]
+async fn set_gpu_acceleration(
+    database: State<'_, Database>,
+    gpu_acceleration: bool,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| db::set_gpu_acceleration(connection, gpu_acceleration))
+        .await
+}
+
 fn validate_autostart(autostart: bool, dev: bool) -> Result<(), AppError> {
     if autostart && dev {
         return Err(AppError::invalid(
@@ -335,6 +350,45 @@ fn production_data_dir(home: &Path) -> PathBuf {
     home.join(".folio")
 }
 
+#[cfg(target_os = "linux")]
+fn workspace_data_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = || std::env::home_dir().ok_or("Could not resolve the home directory");
+    if tauri::is_dev() {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(Ok)
+            .unwrap_or_else(|| home().map(|path| path.join(".local/share")))?;
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))?;
+        let identifier = config["identifier"].as_str().ok_or("Missing application identifier")?;
+        Ok(base.join(identifier))
+    } else {
+        Ok(production_data_dir(&home()?))
+    }
+}
+
+pub fn disable_gpu_compositing(stored_setting: Option<bool>, linux: bool) -> bool {
+    linux && stored_setting == Some(false)
+}
+
+#[cfg(target_os = "linux")]
+pub fn startup_gpu_acceleration() -> Option<bool> {
+    let result = workspace_data_dir().and_then(|directory| {
+        db::read_gpu_acceleration(&directory.join("folio.sqlite3")).map_err(Into::into)
+    });
+    match result {
+        Ok(Some(enabled)) => Some(enabled),
+        Ok(None) => {
+            eprintln!("No stored GPU acceleration setting; using WebKit defaults.");
+            None
+        }
+        Err(error) => {
+            eprintln!("Could not read GPU acceleration setting; using WebKit defaults: {error}");
+            None
+        }
+    }
+}
+
 fn restore_autostart(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -376,6 +430,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            let directory = workspace_data_dir()?;
+            #[cfg(not(target_os = "linux"))]
             let directory = if tauri::is_dev() {
                 app.path().app_data_dir()?
             } else {
@@ -418,7 +475,9 @@ pub fn run() {
             set_window_button_layout,
             set_minimize_to_tray,
             set_autostart,
+            set_gpu_acceleration,
             is_dev_build,
+            is_linux,
             get_default_font,
             check_font_available,
             create_database,
@@ -446,6 +505,20 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_compositing_is_disabled_only_for_explicit_off_on_linux() {
+        for (setting, linux, expected) in [
+            (Some(false), true, true),
+            (Some(true), true, false),
+            (None, true, false), // Missing setting or read failure: WebKit defaults.
+            (Some(false), false, false),
+            (Some(true), false, false),
+            (None, false, false),
+        ] {
+            assert_eq!(disable_gpu_compositing(setting, linux), expected);
+        }
+    }
 
     #[test]
     fn autostart_registration_is_refused_in_development_builds() {

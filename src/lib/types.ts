@@ -55,7 +55,7 @@ export type RecordPageContent = string;
 export type RecordPageUpdatedAt = string;
 
 export interface Workspace {
-  settings: { name: string; accentColor: string; fontFamily: string; sidebarWidth: number | null; windowButtonLayout: WindowButtonOverride; minimizeToTray: boolean; autostart: boolean } | null;
+  settings: { name: string; accentColor: string; fontFamily: string; sidebarWidth: number | null; windowButtonLayout: WindowButtonOverride; minimizeToTray: boolean; autostart: boolean; gpuAcceleration: boolean } | null;
   databases: WorkspaceDatabase[];
   columns: Column[];
   views: SavedView[];
