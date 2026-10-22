@@ -5,7 +5,7 @@ import { formatDate, visibleRecords } from "./records";
 describe("record presentation", () => {
   it("scopes records and filters to the selected saved view", () => {
     const workspace = fixture();
-    expect(visibleRecords(workspace.records, workspace.views[1]).map((record) => record.id)).toEqual([1, 2, 6]);
+    expect(visibleRecords(workspace.records, workspace.views[1], workspace.columns).map((record) => record.id)).toEqual([1, 2, 6]);
     expect(visibleRecords(workspace.records, workspace.views[3]).map((record) => record.id)).toEqual([7, 8]);
     expect(visibleRecords(workspace.records, undefined)).toEqual([]);
   });
@@ -19,7 +19,7 @@ describe("record presentation", () => {
   });
 
   it("formats date-only values and empty dates", () => {
-    expect(formatDate("2026-10-20")).toBe("Oct 20");
+    expect(formatDate("2026-10-20")).toBe("20-10-26");
     expect(formatDate(null)).toBe("No date");
   });
 });

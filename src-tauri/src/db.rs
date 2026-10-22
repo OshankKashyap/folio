@@ -1,10 +1,12 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use crate::columns::{Column, load_columns_full, load_record_values};
 
 #[derive(Debug, Serialize)]
 pub struct AppError {
@@ -20,7 +22,7 @@ impl AppError {
         }
     }
 
-    fn missing() -> Self {
+    pub(crate) fn missing() -> Self {
         Self {
             code: "not_found",
             message: "This item no longer exists. Reload the workspace and try again.",
@@ -84,7 +86,7 @@ impl Database {
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 9 {
+    if version > 10 {
         return Err(rusqlite::Error::InvalidParameterName(
             "This workspace requires a newer version of Folio".into(),
         ));
@@ -115,6 +117,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 9 {
         transaction.execute_batch(include_str!("../migrations/009_autostart.sql"))?;
+    }
+    if version < 10 {
+        transaction.execute_batch(include_str!("../migrations/010_dynamic_columns.sql"))?;
     }
     transaction.commit()?;
     Ok(())
@@ -150,10 +155,7 @@ pub struct Record {
     pub id: i64,
     pub database_id: i64,
     pub name: String,
-    pub status: String,
-    pub priority: String,
-    pub due_date: Option<String>,
-    pub owner: String,
+    pub values: HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -161,10 +163,6 @@ pub struct Record {
 pub struct RecordInput {
     pub id: i64,
     pub name: String,
-    pub status: String,
-    pub priority: String,
-    pub due_date: Option<String>,
-    pub owner: String,
 }
 
 #[derive(Serialize)]
@@ -183,6 +181,7 @@ pub struct WorkspaceSettings {
 pub struct Workspace {
     settings: Option<WorkspaceSettings>,
     databases: Vec<WorkspaceDatabase>,
+    pub columns: Vec<Column>,
     pub views: Vec<SavedView>,
     pub records: Vec<Record>,
 }
@@ -218,15 +217,31 @@ pub fn load(connection: &mut Connection) -> Result<Workspace, AppError> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let columns = load_columns_full(connection)?;
     let views = connection.prepare("SELECT id, database_id, name, layout, filter_active, sort_active, compact, show_owner FROM saved_views ORDER BY database_id, position, id")?
         .query_map([], |row| Ok(SavedView { id: row.get(0)?, database_id: row.get(1)?, name: row.get(2)?, layout: row.get(3)?, filter_active: row.get(4)?, sort_active: row.get(5)?, compact: row.get(6)?, show_owner: row.get(7)? }))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let records = connection.prepare("SELECT id, database_id, name, status, priority, due_date, owner FROM records ORDER BY database_id, position, id")?
-        .query_map([], |row| Ok(Record { id: row.get(0)?, database_id: row.get(1)?, name: row.get(2)?, status: row.get(3)?, priority: row.get(4)?, due_date: row.get(5)?, owner: row.get(6)? }))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Load records without the old hardcoded columns
+    let record_values_map = load_record_values(connection)?;
+    let records = connection.prepare("SELECT id, database_id, name FROM records ORDER BY database_id, position, id")?
+        .query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            Ok((id, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<Vec<(i64, i64, String)>>>()?
+        .into_iter()
+        .map(|(id, database_id, name)| {
+            let values: HashMap<String, String> = record_values_map
+                .get(&id)
+                .map(|m| m.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+                .unwrap_or_default();
+            Record { id, database_id, name, values }
+        })
+        .collect();
     Ok(Workspace {
         settings,
         databases,
+        columns,
         views,
         records,
     })
@@ -438,19 +453,10 @@ fn validate_custom_icon(icon: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_status(status: &str) -> Result<(), AppError> {
-    if !["To do", "In progress", "Done"].contains(&status) {
-        return Err(AppError::invalid("Choose a valid status."));
-    }
-    Ok(())
-}
-
 pub fn create_record(
     connection: &mut Connection,
     database_id: i64,
-    status: &str,
 ) -> Result<Workspace, AppError> {
-    validate_status(status)?;
     let exists = connection
         .query_row(
             "SELECT id FROM databases WHERE id = ?1",
@@ -461,7 +467,7 @@ pub fn create_record(
     if exists.is_none() {
         return Err(AppError::missing());
     }
-    connection.execute("INSERT INTO records (database_id, name, status, priority, position) VALUES (?1, 'Untitled', ?2, 'Medium', (SELECT COALESCE(MAX(position), -1) + 1 FROM records WHERE database_id = ?1))", params![database_id, status])?;
+    connection.execute("INSERT INTO records (database_id, name, position) VALUES (?1, 'Untitled', (SELECT COALESCE(MAX(position), -1) + 1 FROM records WHERE database_id = ?1))", [database_id])?;
     load(connection)
 }
 
@@ -470,22 +476,12 @@ pub fn update_record(
     input: RecordInput,
 ) -> Result<Workspace, AppError> {
     let name = input.name.trim();
-    let owner = input.owner.trim();
-    if name.is_empty() || name.chars().count() > 500 || owner.chars().count() > 200 {
+    if name.is_empty() || name.chars().count() > 500 {
         return Err(AppError::invalid(
-            "A title is required (up to 500 characters); owner must be at most 200 characters.",
+            "A title is required (up to 500 characters).",
         ));
     }
-    validate_status(&input.status)?;
-    if !["High", "Medium", "Low"].contains(&input.priority.as_str()) {
-        return Err(AppError::invalid("Choose a valid priority."));
-    }
-    if let Some(date) = &input.due_date
-        && (date.len() != 10 || chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err())
-    {
-        return Err(AppError::invalid("Choose a valid due date."));
-    }
-    let changed = connection.execute("UPDATE records SET name = ?1, status = ?2, priority = ?3, due_date = ?4, owner = ?5, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?6", params![name, input.status, input.priority, input.due_date, owner, input.id])?;
+    let changed = connection.execute("UPDATE records SET name = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?2", params![name, input.id])?;
     if changed == 0 {
         return Err(AppError::missing());
     }
@@ -572,25 +568,28 @@ mod tests {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         migrate(&mut db).unwrap();
-        db.execute_batch(include_str!("test_seed.sql")).unwrap();
+        // Seed after migration so records don't have old status/priority/due_date/owner columns
+        db.execute_batch(include_str!("test_seed_v10.sql")).unwrap();
         db
     }
 
     fn workspace_snapshot(db: &Connection) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        // Exclude records.* since migration 010 drops status/priority/due_date/owner columns.
+        // Snapshot the stable columns only.
         [
             ("workspace_settings", "id, name, accent_color, font_family"),
             ("databases", "*"),
             ("saved_views", "*"),
-            ("records", "*"),
+            ("records", "id, database_id, name, position, created_at, updated_at"),
         ]
         .map(|(table, columns)| {
             let mut statement = db
                 .prepare(&format!("SELECT {columns} FROM {table} ORDER BY id"))
                 .unwrap();
-            let columns = statement.column_count();
+            let col_count = statement.column_count();
             statement
                 .query_map([], |row| {
-                    (0..columns)
+                    (0..col_count)
                         .map(|index| row.get(index))
                         .collect::<rusqlite::Result<Vec<_>>>()
                 })
@@ -599,6 +598,160 @@ mod tests {
                 .unwrap()
         })
         .into()
+    }
+
+    #[test]
+    fn dynamic_values_validate_persist_clear_and_cascade() {
+        use crate::columns::{self, ColumnOption, PropertyValue as V};
+        let mut db = connection();
+        let options = || Some(vec![ColumnOption { id: 1, label: "A".into(), emoji: "⭐".into(), color: "blue".into() }]);
+        for (kind, valid, invalid) in [
+            ("text", V::Text("hello".into()), V::Number(1.0)),
+            ("number", V::Number(2.5), V::Number(f64::INFINITY)),
+            ("select", V::Select(1), V::Select(99)),
+            ("multiselect", V::Multi(vec![1]), V::Multi(vec![1, 99])),
+            ("checkbox", V::Checkbox(true), V::Text("true".into())),
+            ("status", V::Status(1), V::Select(1)),
+            ("date", V::Date("2024-02-29".into()), V::Date("2026-02-29".into())),
+        ] {
+            let opts = if ["select", "multiselect", "status"].contains(&kind) { options() } else { None };
+            let ws = columns::create_column(&mut db, 1, kind, kind, opts).unwrap();
+            let col = ws.columns.iter().find(|col| col.name == kind).unwrap().id;
+            columns::set_record_value(&mut db, 1, col, Some(valid.clone())).unwrap();
+            let expected = serde_json::to_string(&valid).unwrap();
+            assert_eq!(load(&mut db).unwrap().records[0].values[&col.to_string()], expected);
+            assert!(columns::set_record_value(&mut db, 1, col, Some(invalid)).is_err());
+            if kind != "text" {
+                assert!(columns::set_record_value(&mut db, 1, col, Some(V::Text("wrong type".into()))).is_err());
+            }
+            if kind == "status" {
+                assert!(columns::set_record_value(&mut db, 1, col, Some(V::Status(99))).is_err());
+            }
+            assert!(columns::set_record_value(&mut db, 7, col, Some(valid.clone())).is_err());
+            assert!(columns::set_record_value(&mut db, 999, col, None).is_err());
+            columns::set_record_value(&mut db, 1, col, None).unwrap();
+            assert!(!load(&mut db).unwrap().records[0].values.contains_key(&col.to_string()));
+            columns::set_record_value(&mut db, 1, col, Some(valid)).unwrap();
+            columns::delete_column(&mut db, col).unwrap();
+            assert_eq!(db.query_row("SELECT count(*) FROM record_values WHERE column_id = ?1", [col], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        }
+        for date in ["1900-02-29", "2024-02-30", "+026-01-01", "2026-1-01"] {
+            assert!(!columns::validate_iso_date(date));
+        }
+        let number = columns::create_column(&mut db, 1, "finite", "number", None).unwrap().columns.into_iter().find(|col| col.name == "finite").unwrap().id;
+        assert!(columns::set_record_value(&mut db, 1, number, Some(V::Number(f64::NAN))).is_err());
+        assert!(columns::set_record_value(&mut db, 1, number, Some(V::Number(f64::NEG_INFINITY))).is_err());
+        assert!(columns::set_record_value(&mut db, 1, 999, None).is_err());
+        assert!(columns::create_column(&mut db, 1, "Bad", "unknown", None).is_err());
+        for kind in ["select", "multiselect", "status"] {
+            assert!(columns::create_column(&mut db, 1, "Bad", kind, None).is_err());
+            assert!(columns::create_column(&mut db, 1, "Empty options", kind, Some(vec![])).is_ok());
+        }
+        for kind in ["text", "number", "checkbox", "date"] {
+            assert!(columns::create_column(&mut db, 1, "Bad", kind, options()).is_err());
+        }
+        assert!(columns::create_column(&mut db, 999, "Bad", "text", None).is_err());
+        assert!(columns::create_column(&mut db, 1, " ", "text", None).is_err());
+    }
+
+    #[test]
+    fn dynamic_option_replacement_preserves_ids_and_cleans_cells() {
+        use crate::columns::{self, ColumnOption, PropertyValue as V};
+        let mut db = connection();
+        for kind in ["select", "status", "multiselect"] {
+            let options: Vec<_> = (1..=3).map(|id| ColumnOption { id, label: format!("Option {id}"), emoji: "".into(), color: "gray".into() }).collect();
+            let ws = columns::create_column(&mut db, 1, kind, kind, Some(options.clone())).unwrap();
+            let col = ws.columns.iter().find(|col| col.name == kind).unwrap().id;
+            let value = |ids: Vec<i64>| match kind {
+                "select" => V::Select(ids[0]),
+                "status" => V::Status(ids[0]),
+                _ => V::Multi(ids),
+            };
+            columns::set_record_value(&mut db, 1, col, Some(value(vec![1]))).unwrap();
+            columns::set_record_value(&mut db, 2, col, Some(value(vec![2, 3]))).unwrap();
+            columns::set_record_value(&mut db, 3, col, Some(value(vec![3]))).unwrap();
+            let mut retained = options[1..].to_vec();
+            retained[0].label = "Renamed".into();
+            let ws = columns::set_column_options(&mut db, col, retained.clone()).unwrap();
+            assert!(!ws.records[0].values.contains_key(&col.to_string()));
+            assert_eq!(ws.records[1].values[&col.to_string()], serde_json::to_string(&value(vec![2, 3])).unwrap());
+            assert_eq!(ws.columns.iter().find(|item| item.id == col).unwrap().options.as_ref().unwrap()[0].id, 2);
+            let ws = columns::set_column_options(&mut db, col, vec![retained[1].clone()]).unwrap();
+            if kind == "multiselect" {
+                assert_eq!(ws.records[1].values[&col.to_string()], r#"{"Multi":[3]}"#);
+            } else {
+                assert!(!ws.records[1].values.contains_key(&col.to_string()));
+            }
+            assert_eq!(ws.records[2].values[&col.to_string()], serde_json::to_string(&value(vec![3])).unwrap());
+            assert!(columns::set_column_options(&mut db, col, vec![retained[0].clone(), retained[0].clone()]).is_err());
+            let (new_id, ws) = columns::add_inline_option(&mut db, col, " Inline ").unwrap();
+            assert_eq!(new_id, 4);
+            let option = ws.columns.iter().find(|item| item.id == col).unwrap().options.as_ref().unwrap().last().unwrap();
+            assert_eq!(option.label, "Inline");
+            assert_eq!(option.color, "brown");
+            columns::set_column_options(&mut db, col, vec![]).unwrap();
+            assert_eq!(db.query_row("SELECT count(*) FROM record_values WHERE column_id = ?1", [col], |row| row.get::<_, i64>(0)).unwrap(), 0);
+            columns::rename_column(&mut db, col, " Renamed column ").unwrap();
+            assert_eq!(load(&mut db).unwrap().columns.iter().find(|item| item.id == col).unwrap().name, "Renamed column");
+        }
+    }
+
+    #[test]
+    fn dynamic_migration_preserves_all_old_property_values_and_is_idempotent() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        for migration in [
+            include_str!("../migrations/001_workspace.sql"),
+            include_str!("../migrations/002_workspace_setup.sql"),
+            include_str!("../migrations/003_interface_font.sql"),
+            include_str!("../migrations/004_database_icons.sql"),
+            include_str!("../migrations/005_record_pages.sql"),
+            include_str!("../migrations/006_sidebar_width.sql"),
+            include_str!("../migrations/007_window_button_layout.sql"),
+            include_str!("../migrations/008_minimize_to_tray.sql"),
+            include_str!("../migrations/009_autostart.sql"),
+            include_str!("test_seed.sql"),
+        ] { db.execute_batch(migration).unwrap(); }
+        db.execute("UPDATE records SET owner = ?1, due_date = '2024-02-29' WHERE id = 1", ["Oshank \"quoted\" 🦀\nsecond line"]).unwrap();
+        db.execute("UPDATE records SET due_date = NULL, owner = '' WHERE id = 10", []).unwrap();
+        let old: Vec<(i64, i64, String, String, Option<String>, String)> = db.prepare("SELECT id, database_id, status, priority, due_date, owner FROM records ORDER BY id").unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let stable = workspace_snapshot(&db);
+        migrate(&mut db).unwrap();
+        assert_eq!(workspace_snapshot(&db), stable);
+        let workspace = load(&mut db).unwrap();
+        assert_eq!(workspace.columns.len(), 12);
+        for (id, database_id, status, priority, due_date, owner) in old {
+            let record = workspace.records.iter().find(|record| record.id == id).unwrap();
+            for (name, kind, expected) in [
+                ("Status", "status", Some(serde_json::json!({"Status": match status.as_str() { "To do" => 1, "In progress" => 2, "Done" => 3, _ => unreachable!() }}))),
+                ("Priority", "select", Some(serde_json::json!({"Select": match priority.as_str() { "High" => 1, "Medium" => 2, "Low" => 3, _ => unreachable!() }}))),
+                ("Due date", "date", due_date.map(|value| serde_json::json!({"Date": value}))),
+                ("Owner", "text", if owner.is_empty() { None } else { Some(serde_json::json!({"Text": owner})) }),
+            ] {
+                let col = workspace.columns.iter().find(|col| col.database_id == database_id && col.name == name).unwrap();
+                assert_eq!(col.col_type, kind);
+                let actual = record.values.get(&col.id.to_string()).map(|json| serde_json::from_str::<serde_json::Value>(json).unwrap());
+                assert_eq!(actual, expected, "record {id}, {name}");
+                if kind == "status" || kind == "select" {
+                    let options = col.options.as_ref().unwrap();
+                    let labels = if kind == "status" { ["To do", "In progress", "Done"] } else { ["High", "Medium", "Low"] };
+                    let colors = if kind == "status" { ["gray", "blue", "green"] } else { ["red", "orange", "gray"] };
+                    for (index, option) in options.iter().enumerate() {
+                        assert_eq!(option.id, index as i64 + 1);
+                        assert_eq!(option.label, labels[index]);
+                        assert_eq!(option.color, colors[index]);
+                        assert_eq!(option.emoji, "");
+                    }
+                    assert_eq!(options.len(), 3);
+                }
+            }
+        }
+        let fields: Vec<String> = db.prepare("PRAGMA table_info(records)").unwrap().query_map([], |row| row.get(1)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        for old in ["status", "priority", "due_date", "owner"] { assert!(!fields.iter().any(|field| field == old)); }
+        assert_eq!(db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 10);
+        let before = serde_json::to_value(workspace).unwrap();
+        migrate(&mut db).unwrap();
+        assert_eq!(serde_json::to_value(load(&mut db).unwrap()).unwrap(), before);
     }
 
     #[test]
@@ -624,7 +777,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -656,7 +809,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -690,7 +843,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -751,7 +904,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         migrate(&mut db).unwrap();
         assert_eq!(workspace_snapshot(&db), before);
@@ -898,7 +1051,7 @@ mod tests {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                9
+                10
             );
             save_record_page(&mut db, 1, "Persist me").unwrap();
         }
@@ -937,34 +1090,32 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 0);
-        db.pragma_update(None, "user_version", 10).unwrap();
+        // Version 11 is one beyond the current maximum of 10 → must be rejected.
+        db.pragma_update(None, "user_version", 11).unwrap();
         assert!(migrate(&mut db).is_err());
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
     }
 
     #[test]
     fn records_support_create_update_delete_and_validation() {
         let mut db = connection();
-        let workspace = create_record(&mut db, 2, "In progress").unwrap();
+        let workspace = create_record(&mut db, 2).unwrap();
         let id = workspace
             .records
             .iter()
             .map(|record| record.id)
             .max()
             .unwrap();
-        let input = |date: &str| RecordInput {
+        let input = |name: &str| RecordInput {
             id,
-            name: " A real book ".into(),
-            status: "Done".into(),
-            priority: "High".into(),
-            due_date: Some(date.into()),
-            owner: "Oshank".into(),
+            name: name.into(),
         };
-        assert!(update_record(&mut db, input("2026-02-30")).is_err());
-        let workspace = update_record(&mut db, input("2026-12-01")).unwrap();
+        // Name validation
+        assert!(update_record(&mut db, input("")).is_err());
+        let workspace = update_record(&mut db, input(" A real book ")).unwrap();
         assert_eq!(
             workspace
                 .records
@@ -975,8 +1126,7 @@ mod tests {
             "A real book"
         );
         assert_eq!(delete_record(&mut db, id).unwrap().records.len(), 10);
-        assert!(create_record(&mut db, 999, "To do").is_err());
-        assert!(create_record(&mut db, 1, "invalid").is_err());
+        assert!(create_record(&mut db, 999).is_err());
     }
 
     #[test]
@@ -1082,7 +1232,12 @@ mod tests {
                 Some("data:image/png;base64,AAAA"),
             )
             .unwrap();
-            create_record(&mut db, workspace.databases[0].id, "Done").unwrap();
+            let database_id = workspace.databases[0].id;
+            let workspace = create_record(&mut db, database_id).unwrap();
+            let record_id = workspace.records[0].id;
+            let workspace = crate::columns::create_column(&mut db, database_id, "Notes", "text", None).unwrap();
+            let column_id = workspace.columns[0].id;
+            crate::columns::set_record_value(&mut db, record_id, column_id, Some(crate::columns::PropertyValue::Text("Persistent value".into()))).unwrap();
             let mut view = load(&mut db).unwrap().views.remove(0);
             view.show_owner = false;
             update_view(&mut db, view).unwrap();
@@ -1091,6 +1246,8 @@ mod tests {
         migrate(&mut db).unwrap();
         let workspace = load(&mut db).unwrap();
         assert_eq!(workspace.records.len(), 1);
+        assert_eq!(workspace.columns[0].name, "Notes");
+        assert_eq!(workspace.records[0].values[&workspace.columns[0].id.to_string()], r#"{"Text":"Persistent value"}"#);
         assert_eq!(workspace.databases[0].emoji, "🚀");
         assert_eq!(
             workspace.databases[0].custom_icon.as_deref(),
@@ -1156,7 +1313,7 @@ mod tests {
             [
                 ("databases", "id, name, description, icon, position"),
                 ("saved_views", "*"),
-                ("records", "*"),
+                ("records", "id, database_id, name, position, created_at, updated_at"),
             ]
             .map(|(table, columns)| {
                 let mut statement = db
@@ -1206,7 +1363,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         migrate(&mut db).unwrap();
         assert_eq!(snapshot(&db), before);

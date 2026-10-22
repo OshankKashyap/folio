@@ -3,12 +3,16 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/sve
 import userEvent from "@testing-library/user-event";
 import { api } from "$lib/api";
 import { fixture } from "$lib/test-fixture";
-import type { Workspace as WorkspaceData } from "$lib/types";
+import type { Column, ColumnOption, ColumnType, PropertyValue, Workspace as WorkspaceData } from "$lib/types";
+import { columnTypes, optionColors } from "$lib/columns";
 import Workspace from "./Workspace.svelte";
 import Titlebar from "./Titlebar.svelte";
 import { uiState } from "$lib/uiState.svelte";
 import settingsSource from "./SettingsPanel.svelte?raw";
 import workspaceSource from "./Workspace.svelte?raw";
+import columnHeaderSource from "./ColumnHeader.svelte?raw";
+import propertyCellSource from "./PropertyCell.svelte?raw";
+import optionChipSource from "./OptionChip.svelte?raw";
 import pageSource from "./RecordPage.svelte?raw";
 import { createEditor } from "$lib/editor";
 
@@ -25,13 +29,14 @@ vi.mock("$lib/editor", () => ({
 
 vi.mock("$lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("$lib/api")>();
-  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), setMinimizeToTray: vi.fn(), setAutostart: vi.fn(), isDevBuild: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
+  return { ...original, api: { load: vi.fn(), setup: vi.fn(), createDatabase: vi.fn(), pickDatabaseIcon: vi.fn(), saveView: vi.fn(), createRecord: vi.fn(), createColumn: vi.fn(), renameColumn: vi.fn(), deleteColumn: vi.fn(), setColumnOptions: vi.fn(), setRecordValue: vi.fn(), addInlineOption: vi.fn(), update: vi.fn(), remove: vi.fn(), reorder: vi.fn(), setFontFamily: vi.fn(), setSidebarWidth: vi.fn(), setWindowButtonLayout: vi.fn(), setMinimizeToTray: vi.fn(), setAutostart: vi.fn(), isDevBuild: vi.fn(), getWindowButtonLayout: vi.fn(), getDefaultFont: vi.fn(), checkFontAvailable: vi.fn(), getRecordPage: vi.fn(), saveRecordPage: vi.fn() } };
 });
 
 let data: WorkspaceData;
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   data = fixture();
   uiState.windowButtonLayout = null;
@@ -68,9 +73,15 @@ beforeEach(() => {
     data.views = data.views.map((item) => item.id === view.id ? view : item);
     return structuredClone(data);
   });
+  vi.mocked(api.setRecordValue).mockImplementation(async (recordId, columnId, value) => {
+    const record = data.records.find((item) => item.id === recordId)!;
+    if (value === null) delete record.values[String(columnId)];
+    else record.values[String(columnId)] = JSON.stringify(value);
+    return structuredClone(data);
+  });
 });
 
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 async function openWorkspace() {
   const user = userEvent.setup();
@@ -78,6 +89,410 @@ async function openWorkspace() {
   await screen.findByRole("heading", { name: "Projects" });
   return user;
 }
+
+describe("dynamic columns", () => {
+  it("keeps column headings above the readable row text size", () => {
+    expect(workspaceSource.split("\n  th {")[1].split("}")[0]).toContain("font-size: 14px;");
+    expect(workspaceSource.split("table {")[1].split("}")[0]).toContain("font-size: 13px;");
+  });
+
+  it("uses a consistent workspace text hierarchy and spacing", () => {
+    for (const selector of [".chrome", ".toolbar", ".side-bottom"]) {
+      expect(workspaceSource.split(`${selector} {`)[1].split("}")[0], selector).toContain("font-size: 13px;");
+    }
+    for (const selector of [".local-indicator", ".footer", ".side-bottom small", ".page-button"]) {
+      expect(workspaceSource.split(`${selector} {`)[1].split("}")[0], selector).toContain("font-size: 12px;");
+    }
+    for (const selector of [".caption", ".eyebrow"]) {
+      const rule = workspaceSource.split(`${selector} {`)[1].split("}")[0];
+      expect(rule, selector).toContain("font-size: 11px;");
+      expect(rule, selector).toContain("letter-spacing: 1px;");
+    }
+    const valueRule = propertyCellSource.split(".property-cell {")[1].split("}")[0];
+    expect(valueRule).toContain("font-size: 13px;");
+    expect(valueRule).toContain("font-weight: 400;");
+    const chipRule = optionChipSource.split(".option-chip {")[1].split("}")[0];
+    expect(chipRule).toContain("font-size: 12px;");
+    expect(chipRule).toContain("font-weight: 400;");
+    expect(workspaceSource.split(".toolbar {")[1].split("}")[0]).toContain("gap: 8px;");
+    expect(propertyCellSource.split(".cell-button {")[1].split("}")[0]).toContain("gap: 6px;");
+  });
+
+  it("keeps the add-column hover target compact and uses a larger plus icon", async () => {
+    const user = await openWorkspace();
+    const button = screen.getByRole("button", { name: "Add column" });
+    expect(button.classList.contains("add-column")).toBe(true);
+    expect(button.querySelector("svg")?.getAttribute("width")).toBe("18");
+    expect(button.querySelector("svg")?.getAttribute("height")).toBe("18");
+    const rule = columnHeaderSource.split(".column-header.add-column {")[1].split("}")[0];
+    expect(rule).toContain("width: 28px;");
+    expect(rule).toContain("height: 28px;");
+    expect(rule).toContain("justify-content: center;");
+    expect(screen.getByRole("button", { name: "Column Status" }).classList.contains("add-column")).toBe(false);
+    button.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("dialog", { name: "Create column" })).toBeTruthy();
+  });
+
+  it("prevents table line-selection highlights while preserving selection in cell inputs", async () => {
+    // jsdom cannot render native triple-click selection across table-cell padding.
+    const tableRule = workspaceSource.split(".table-wrap {")[1].split("}")[0];
+    expect(tableRule).toContain("-webkit-user-select: none;");
+    expect(tableRule).toContain("user-select: none;");
+    const inputRule = workspaceSource.split(".table-wrap :global(input) {")[1].split("}")[0];
+    expect(inputRule).toContain("-webkit-user-select: text;");
+    expect(inputRule).toContain("user-select: text;");
+
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Owner for Network monitor" }));
+    const input = screen.getByLabelText("Edit Owner for Network monitor") as HTMLInputElement;
+    await user.tripleClick(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe("Oshank".length);
+    await user.keyboard("Replacement{Enter}");
+    await waitFor(() => expect(api.setRecordValue).toHaveBeenCalledWith(1, 13, { Text: "Replacement" }));
+  });
+
+  function syncColumns() {
+    for (const database of data.databases) database.columns = data.columns.filter((column) => column.databaseId === database.id);
+    return structuredClone(data);
+  }
+
+  beforeEach(() => {
+    vi.mocked(api.createColumn).mockImplementation(async (databaseId, name, type, options) => {
+      data.columns.push({ id: 99, databaseId, name, type, options, position: 4 });
+      return syncColumns();
+    });
+    vi.mocked(api.renameColumn).mockImplementation(async (id, name) => {
+      data.columns = data.columns.map((column) => column.id === id ? { ...column, name } : column);
+      return syncColumns();
+    });
+    vi.mocked(api.deleteColumn).mockImplementation(async (id) => {
+      data.columns = data.columns.filter((column) => column.id !== id);
+      return syncColumns();
+    });
+    vi.mocked(api.setColumnOptions).mockImplementation(async (id, options) => {
+      data.columns = data.columns.map((column) => column.id === id ? { ...column, options: options.map((option) => ({ ...option })) } : column);
+      return syncColumns();
+    });
+    vi.mocked(api.addInlineOption).mockImplementation(async (id, label) => {
+      data.columns.find((column) => column.id === id)!.options!.push({ id: 4, label, emoji: "", color: "yellow" });
+      return [4, syncColumns()];
+    });
+  });
+
+  it.each(columnTypes)("creates a $name column with its type icon and a default name", async ({ type, name }) => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Add column" }));
+    const dialog = screen.getByRole("dialog", { name: "Create column" });
+    const typeButton = within(dialog).getByRole("button", { name });
+    const menuIcon = typeButton.querySelector("svg")!;
+    expect(menuIcon.getAttribute("width")).toBe("18");
+    expect(menuIcon.getAttribute("height")).toBe("18");
+    const iconMarkup = menuIcon.innerHTML;
+    await user.click(typeButton);
+    await user.click(within(dialog).getByRole("button", { name: "Create column" }));
+    await waitFor(() => expect(api.createColumn).toHaveBeenCalledWith(1, name, type, ["select", "status", "multiselect"].includes(type) ? [] : null));
+    const header = (await screen.findAllByRole("button", { name: `Column ${name}` })).at(-1)!;
+    const headerIcon = header.querySelector(".type-icon svg")!;
+    expect(headerIcon.getAttribute("width")).toBe("18");
+    expect(headerIcon.getAttribute("height")).toBe("18");
+    expect(headerIcon.innerHTML).toBe(iconMarkup);
+    const row = screen.getAllByRole("row")[1];
+    const pageCell = within(row).getByRole("button", { name: "Open page" }).closest("td")!;
+    expect(pageCell).toBe(row.lastElementChild);
+    expect(screen.queryByRole("columnheader", { name: "Page" })).toBeNull();
+    expect(within(row).getAllByRole("cell")).toHaveLength(data.databases[0].columns.length + 3);
+    expect(within(pageCell.previousElementSibling as HTMLElement).getByRole("button").getAttribute("aria-label")).toBe(`${name} for Network monitor`);
+  });
+
+  it.each(["select", "multiselect", "status"] as const)("keeps populated %s chips free of a full-width hover background", async (type) => {
+    const options: ColumnOption[] = [{ id: 1, label: "First", emoji: "", color: "gray" }, { id: 2, label: "Second", emoji: "", color: "brown" }];
+    data.columns.push({ id: 99, databaseId: 1, name: "Test", type, options, position: 4 });
+    data.records[0].values["99"] = JSON.stringify(type === "multiselect" ? { Multi: [1, 2] } : type === "status" ? { Status: 1 } : { Select: 1 });
+    syncColumns();
+    const user = await openWorkspace();
+    const cell = screen.getByRole("button", { name: "Test for Network monitor" });
+    expect(cell.classList.contains("icon-only")).toBe(false);
+    await user.hover(cell);
+    const rule = propertyCellSource.split(".cell-button:not(.icon-only):hover:not(:disabled) {")[1].split("}")[0];
+    expect(rule.trim()).toBe("background: transparent;");
+    const chips = cell.querySelectorAll<HTMLElement>(".option-chip");
+    expect(chips).toHaveLength(type === "multiselect" ? 2 : 1);
+    expect(chips[0].style.background).toBe("rgb(48, 49, 55)");
+    if (type === "multiselect") expect(chips[1].style.background).toBe("rgb(73, 55, 46)");
+    await user.click(cell);
+    expect(screen.getByRole("dialog", { name: "Edit Test" })).toBeTruthy();
+  });
+
+  it.each([
+    { type: "number", value: null, text: "—" },
+    { type: "number", value: { Number: 0 }, text: "0" },
+    { type: "number", value: { Number: 2.5 }, text: "2.5" },
+    { type: "text", value: null, text: "Empty" },
+    { type: "text", value: { Text: "Notes" }, text: "Notes" },
+    { type: "date", value: null, text: "No date" },
+    { type: "date", value: { Date: "2026-10-10" }, text: "10-10-26" },
+  ] satisfies { type: ColumnType; value: PropertyValue | null; text: string }[])("keeps $type cells ($text) free of full-width hover backgrounds and editable", async ({ type, value, text }) => {
+    data.columns.push({ id: 99, databaseId: 1, name: "Test", type, options: null, position: 4 });
+    if (value !== null) data.records[0].values["99"] = JSON.stringify(value);
+    syncColumns();
+    const user = await openWorkspace();
+    const cell = screen.getByRole("button", { name: "Test for Network monitor" });
+    expect(cell.textContent).toBe(text);
+    expect(cell.classList.contains("icon-only")).toBe(false);
+    await user.hover(cell);
+    const rule = propertyCellSource.split(".cell-button:not(.icon-only):hover:not(:disabled) {")[1].split("}")[0];
+    expect(rule.trim()).toBe("background: transparent;");
+    await user.click(cell);
+    if (type === "date") expect(screen.getByRole("dialog", { name: "Edit Test" })).toBeTruthy();
+    else expect(screen.getByLabelText("Edit Test for Network monitor")).toBe(document.activeElement);
+  });
+
+  it.each(["select", "multiselect", "status", "checkbox"] as const)("uses a readable, compact %s cell control instead of a full-width hover target", async (type) => {
+    data.columns.push({ id: 99, databaseId: 1, name: "Test", type, options: type === "checkbox" ? null : [], position: 4 });
+    syncColumns();
+    const user = await openWorkspace();
+    const cell = screen.getByRole("button", { name: "Test for Network monitor" });
+    expect(cell.classList.contains("icon-only")).toBe(true);
+    expect(cell.querySelector("svg")?.getAttribute("width")).toBe("18");
+    expect(cell.querySelector("svg")?.getAttribute("height")).toBe("18");
+    const rule = propertyCellSource.split(".cell-button.icon-only {")[1].split("}")[0];
+    expect(rule).toContain("width: 28px;");
+    expect(rule).toContain("min-height: 28px;");
+    expect(rule).toContain("justify-content: center;");
+    cell.focus();
+    await user.keyboard(type === "checkbox" ? " " : "{Enter}");
+    if (type === "checkbox") {
+      await waitFor(() => expect(api.setRecordValue).toHaveBeenCalledWith(1, 99, { Checkbox: true }));
+      expect(cell.getAttribute("aria-pressed")).toBe("true");
+      expect(cell.querySelector("svg")?.getAttribute("width")).toBe("18");
+    } else {
+      expect(screen.getByRole("dialog", { name: "Edit Test" })).toBeTruthy();
+    }
+  });
+
+  it("renames inline and confirms deletion before calling the API", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Column Owner" }));
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    await user.clear(screen.getByLabelText("Column name"));
+    await user.type(screen.getByLabelText("Column name"), "Contact");
+    await user.click(screen.getByRole("button", { name: "Rename column" }));
+    expect(api.renameColumn).toHaveBeenCalledWith(13, "Contact");
+    await user.click(await screen.findByRole("button", { name: "Column Contact" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(api.deleteColumn).not.toHaveBeenCalled();
+    expect(screen.getByText("Delete this column and all its values permanently?")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Delete column" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Column Contact" })).toBeNull());
+    expect(api.deleteColumn).toHaveBeenCalledWith(13);
+  });
+
+  it.each(["create", "rename", "delete"])("reverts a failed %s column mutation", async (operation) => {
+    const user = await openWorkspace();
+    if (operation === "create") {
+      vi.mocked(api.createColumn).mockRejectedValueOnce({ message: "Column save failed." });
+      await user.click(screen.getByRole("button", { name: "Add column" }));
+      await user.type(screen.getByLabelText("Column name"), "Failed column");
+      await user.click(screen.getByRole("button", { name: "Create column" }));
+    } else {
+      await user.click(screen.getByRole("button", { name: "Column Owner" }));
+      if (operation === "rename") {
+        vi.mocked(api.renameColumn).mockRejectedValueOnce({ message: "Column save failed." });
+        await user.click(screen.getByRole("button", { name: "Rename" }));
+        await user.clear(screen.getByLabelText("Column name"));
+        await user.type(screen.getByLabelText("Column name"), "Failed column");
+        await user.click(screen.getByRole("button", { name: "Rename column" }));
+      } else {
+        vi.mocked(api.deleteColumn).mockRejectedValueOnce({ message: "Column save failed." });
+        await user.click(screen.getByRole("button", { name: "Delete" }));
+        await user.click(screen.getByRole("button", { name: "Delete column" }));
+      }
+    }
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Column save failed."));
+    expect(screen.queryByRole("button", { name: "Column Failed column" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Column Owner" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Owner for Network monitor" })).toHaveProperty("textContent", "Oshank");
+  });
+
+  it("edits option labels, emoji from the 48-item grid, colors, and removals as a whole list", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Column Priority" }));
+    await user.click(screen.getByRole("button", { name: "Edit options" }));
+    await user.click(screen.getByRole("button", { name: "Remove Medium" }));
+    await user.clear(screen.getAllByLabelText("Option label")[0]);
+    await user.type(screen.getAllByLabelText("Option label")[0], "Urgent");
+    await user.click(screen.getByRole("button", { name: "Emoji for Urgent" }));
+    expect(screen.getAllByRole("button", { name: /^Choose / })).toHaveLength(48);
+    await user.click(screen.getByRole("button", { name: "Choose ⭐" }));
+    await user.selectOptions(screen.getAllByLabelText("Color")[0], "purple");
+    await user.click(screen.getByRole("button", { name: "Add option" }));
+    await user.type(screen.getAllByLabelText("Option label")[2], "Later");
+    await user.click(screen.getByRole("button", { name: "Save options" }));
+    expect(api.setColumnOptions).toHaveBeenCalledWith(11, [
+      { id: 1, label: "Urgent", emoji: "⭐", color: "purple" },
+      { id: 3, label: "Low", emoji: "", color: "gray" },
+      { id: 4, label: "Later", emoji: "", color: "gray" },
+    ]);
+    const cell = await screen.findByRole("button", { name: "Priority for Network monitor" });
+    expect(cell.textContent).toBe("⭐ Urgent");
+    const chip = cell.querySelector(".option-chip") as HTMLElement;
+    expect(chip.style.background).toBe("rgb(59, 48, 77)");
+    expect(chip.style.color).toBe("rgb(203, 176, 237)");
+    expect(Object.keys(optionColors)).toHaveLength(9);
+  });
+
+  it.each([
+    ["text", { Text: "Original" }, { Text: "Changed" }],
+    ["number", { Number: 1 }, { Number: 2.5 }],
+    ["checkbox", { Checkbox: false }, { Checkbox: true }],
+    ["select", { Select: 1 }, { Select: 2 }],
+    ["status", { Status: 1 }, { Status: 2 }],
+    ["multiselect", { Multi: [1] }, { Multi: [1, 2] }],
+    ["date", { Date: "2024-02-28" }, { Date: "2024-02-29" }],
+  ] as [ColumnType, PropertyValue, PropertyValue][])("saves the %s editor through the API", async (type, initial, expected) => {
+    const options: ColumnOption[] = [{ id: 1, label: "First", emoji: "⭐", color: "blue" }, { id: 2, label: "Second", emoji: "", color: "green" }];
+    const column: Column = { id: 99, databaseId: 1, name: "Test", type, options: ["select", "status", "multiselect"].includes(type) ? options : null, position: 4 };
+    data.columns.push(column); syncColumns();
+    data.records[0].values["99"] = JSON.stringify(initial);
+    const user = await openWorkspace();
+    const cell = screen.getByRole("button", { name: "Test for Network monitor" });
+    cell.focus();
+    await user.keyboard(type === "checkbox" ? " " : "{Enter}");
+    if (type === "text" || type === "number") {
+      const input = screen.getByLabelText("Edit Test for Network monitor");
+      await user.clear(input);
+      await user.type(input, type === "text" ? "Changed" : "2.5");
+      await user.keyboard("{Enter}");
+    } else if (type === "date") {
+      await user.click(screen.getByRole("button", { name: "29-02-24" }));
+    } else if (type !== "checkbox") {
+      await user.click(screen.getByRole("button", { name: "Second" }));
+    }
+    await waitFor(() => expect(api.setRecordValue).toHaveBeenCalledWith(1, 99, expected));
+    if (type === "date") expect(cell.textContent).toBe("29-02-24");
+    if (type === "multiselect") {
+      expect(screen.getByRole("dialog", { name: "Edit Test" })).toBeTruthy();
+      await user.click(screen.getByRole("button", { name: /First/ }));
+      await waitFor(() => expect(api.setRecordValue).toHaveBeenLastCalledWith(1, 99, { Multi: [2] }));
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      await waitFor(() => expect(api.setRecordValue).toHaveBeenLastCalledWith(1, 99, null));
+    }
+  });
+
+  it("adds an option inline and immediately selects the returned stable id", async () => {
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Priority for Network monitor" }));
+    await user.type(screen.getByPlaceholderText("Type to add option…"), "Urgent");
+    await user.click(screen.getByRole("button", { name: "Add option" }));
+    await waitFor(() => expect(api.addInlineOption).toHaveBeenCalledWith(11, "Urgent"));
+    await waitFor(() => expect(api.setRecordValue).toHaveBeenCalledWith(1, 11, { Select: 4 }));
+    expect(screen.getByRole("button", { name: "Priority for Network monitor" }).textContent).toBe("Urgent");
+  });
+
+  it("reverts failed header option edits and leaves failed inline additions unselected", async () => {
+    const user = await openWorkspace();
+    vi.mocked(api.setColumnOptions).mockRejectedValueOnce({ message: "Options save failed." });
+    await user.click(screen.getByRole("button", { name: "Column Priority" }));
+    await user.click(screen.getByRole("button", { name: "Edit options" }));
+    await user.clear(screen.getAllByLabelText("Option label")[0]);
+    await user.type(screen.getAllByLabelText("Option label")[0], "Failed option");
+    await user.click(screen.getByRole("button", { name: "Save options" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Priority for Network monitor" }).textContent).toBe("High");
+    vi.mocked(api.addInlineOption).mockRejectedValueOnce({ message: "Option creation failed." });
+    await user.click(screen.getByRole("button", { name: "Priority for Network monitor" }));
+    await user.type(screen.getByPlaceholderText("Type to add option…"), "Failed option");
+    await user.click(screen.getByRole("button", { name: "Add option" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Option creation failed."));
+    expect(api.setRecordValue).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Priority for Network monitor" }).textContent).toBe("High");
+  });
+
+  it("keeps February 29 out of a non-leap-year calendar and supports month navigation", async () => {
+    data.records[0].values["12"] = JSON.stringify({ Date: "2026-02-28" });
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Due date for Network monitor" }));
+    expect(screen.queryByRole("button", { name: "29-02-26" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Next month" }));
+    expect(screen.getByRole("button", { name: "31-03-26" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Previous month" }));
+    expect(screen.getByRole("button", { name: "28-02-26" }).getAttribute("aria-pressed")).toBe("true");
+    expect(api.setRecordValue).not.toHaveBeenCalled();
+  });
+
+  it("optimistically displays edits, reverts failed saves, and supports Escape and blur", async () => {
+    let reject!: (cause: unknown) => void;
+    vi.mocked(api.setRecordValue).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    const user = await openWorkspace();
+    const cell = screen.getByRole("button", { name: "Owner for Network monitor" });
+    await user.click(cell);
+    await user.clear(screen.getByLabelText("Edit Owner for Network monitor"));
+    await user.type(screen.getByLabelText("Edit Owner for Network monitor"), "Changed");
+    await user.keyboard("{Enter}");
+    expect(cell.textContent).toBe("Changed");
+    reject({ message: "Cell save failed." });
+    await screen.findByRole("alert");
+    await waitFor(() => expect(cell.textContent).toBe("Oshank"));
+    await user.click(cell);
+    await user.type(screen.getByLabelText("Edit Owner for Network monitor"), "Discard");
+    await user.keyboard("{Escape}");
+    expect(cell.textContent).toBe("Oshank");
+    expect(api.setRecordValue).toHaveBeenCalledTimes(1);
+    await user.click(cell);
+    const input = screen.getByLabelText("Edit Owner for Network monitor");
+    await user.clear(input); await user.type(input, "Blur saved");
+    await user.tab();
+    await waitFor(() => expect(api.setRecordValue).toHaveBeenLastCalledWith(1, 13, { Text: "Blur saved" }));
+  });
+
+  it("rejects invalid numbers inline without calling the API", async () => {
+    data.columns.push({ id: 99, databaseId: 1, name: "Amount", type: "number", options: null, position: 4 }); syncColumns();
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "Amount for Network monitor" }));
+    await user.type(screen.getByLabelText("Edit Amount for Network monitor"), "Infinity");
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("alert")).toHaveProperty("textContent", "Enter a valid finite number.");
+    expect(api.setRecordValue).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("closes popovers on outside clicks and Escape and clears date/select values", async () => {
+    const user = await openWorkspace();
+    for (const name of ["Priority", "Due date"]) {
+      const cell = screen.getByRole("button", { name: `${name} for Network monitor` });
+      await user.click(cell);
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      await waitFor(() => expect(api.setRecordValue).toHaveBeenLastCalledWith(1, name === "Priority" ? 11 : 12, null));
+      if (name === "Due date") expect(cell.textContent).toBe("No date");
+      await user.click(cell);
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(cell);
+      await user.click(cell);
+      await user.click(screen.getByRole("heading", { name: "Projects" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    }
+  });
+
+  it("groups dynamic status options and gracefully handles a deleted status column", async () => {
+    data.records[0].values = {};
+    const user = await openWorkspace();
+    await user.click(screen.getByRole("button", { name: "By status" }));
+    expect(within(screen.getByRole("region", { name: "No status records" })).getByRole("button", { name: "Network monitor" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "All records" }));
+    await user.click(screen.getByRole("button", { name: "Column Status" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete column" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Column Status" })).toBeNull());
+    await user.click(screen.getByRole("button", { name: "In progress" }));
+    expect(screen.getAllByRole("row")).toHaveLength(7);
+    await user.click(screen.getByRole("button", { name: "By status" }));
+    expect(within(screen.getByRole("region", { name: "No status records" })).getAllByRole("button")).toHaveLength(6);
+  });
+});
 
 describe("Folio workspace", () => {
   describe("sidebar resizing", () => {
@@ -232,6 +647,27 @@ describe("Folio workspace", () => {
     expect(document.activeElement).toBe(notes);
     expect(api.getRecordPage).toHaveBeenCalledWith(1);
     expect(api.load).toHaveBeenCalledTimes(1);
+  });
+
+  it("overlays Page at the row's right edge without a separate column when there are no properties", async () => {
+    data.columns = [];
+    for (const database of data.databases) database.columns = [];
+    const user = await openWorkspace();
+    expect(screen.getAllByRole("columnheader")).toHaveLength(3); // Reorder, Name, add column.
+    expect(screen.queryByRole("columnheader", { name: "Page" })).toBeNull();
+    const row = screen.getAllByRole("row")[1];
+    expect(within(row).getAllByRole("cell")).toHaveLength(3);
+    const trigger = within(row).getByRole("button", { name: "Open page" });
+    expect(trigger.closest("td")).toBe(row.lastElementChild);
+    const actionsRule = workspaceSource.split(".row-actions {")[1].split("}")[0];
+    expect(actionsRule).toContain("position: relative;");
+    expect(actionsRule).toContain("min-width: 80px;");
+    expect(workspaceSource.split(".table-wrap {")[1].split("}")[0]).toContain("overflow-x: auto;");
+    expect(workspaceSource.split(".page-button {")[1].split("}")[0]).toContain("right: 4px;");
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("region", { name: "Record page" })).toBeTruthy();
+    expect(api.getRecordPage).toHaveBeenCalledWith(1);
   });
 
   it("debounces notes and displays Saving then Saved", async () => {
@@ -408,7 +844,7 @@ describe("Folio workspace", () => {
   });
 
   it.each([["Teal", "#5ecfca"], ["Amber", "#f5cd6f"]])("saves the %s accent preset", async (label, accentColor) => {
-    data = { settings: null, databases: [], views: [], records: [] };
+    data = { settings: null, databases: [], columns: [], views: [], records: [] };
     vi.mocked(api.setup).mockResolvedValue({ ...data, settings: { name: "Home", accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false } });
     const user = userEvent.setup();
     render(Workspace);
@@ -420,13 +856,13 @@ describe("Folio workspace", () => {
   });
 
   it("sets up an empty workspace and creates its first database without sample records", async () => {
-    data = { settings: null, databases: [], views: [], records: [] };
+    data = { settings: null, databases: [], columns: [], views: [], records: [] };
     vi.mocked(api.setup).mockImplementation(async (name, accentColor) => {
       data.settings = { name, accentColor, fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false };
       return structuredClone(data);
     });
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
-      data.databases.push({ id: 1, name, description: "", icon: "layers", emoji: "", customIcon: null });
+      data.databases.push({ id: 1, name, description: "", icon: "layers", emoji: "", customIcon: null, columns: [] });
       data.views.push({ id: 1, databaseId: 1, name: "All records", layout: "table", filterActive: false, sortActive: false, compact: false, showOwner: true });
       return structuredClone(data);
     });
@@ -453,7 +889,7 @@ describe("Folio workspace", () => {
   });
 
   it("keeps setup inputs on save failure and retries with a custom color", async () => {
-    data = { settings: null, databases: [], views: [], records: [] };
+    data = { settings: null, databases: [], columns: [], views: [], records: [] };
     vi.mocked(api.setup).mockRejectedValueOnce({ message: "Could not save workspace." });
     const user = userEvent.setup();
     render(Workspace);
@@ -470,7 +906,7 @@ describe("Folio workspace", () => {
   });
 
   it("shows database creation errors without leaving the empty workspace", async () => {
-    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false }, databases: [], views: [], records: [] };
+    data = { settings: { name: "Home", accentColor: "#b8aaf7", fontFamily: "", sidebarWidth: null, windowButtonLayout: "", minimizeToTray: false, autostart: false }, databases: [], columns: [], views: [], records: [] };
     vi.mocked(api.createDatabase).mockRejectedValue({ message: "Could not create database." });
     const user = userEvent.setup();
     render(Workspace);
@@ -495,11 +931,11 @@ describe("Folio workspace", () => {
   it("saves view settings without affecting another database", async () => {
     const user = await openWorkspace();
     await user.click(screen.getByRole("button", { name: "View settings" }));
-    await user.click(screen.getByRole("checkbox", { name: "Show owner" }));
-    await waitFor(() => expect(screen.queryByRole("columnheader", { name: "Owner" })).toBeNull());
-    expect(api.saveView).toHaveBeenCalledWith(expect.objectContaining({ id: 10, showOwner: false }));
+    expect(screen.getByRole("checkbox", { name: "Show owner" })).toHaveProperty("disabled", true);
     await user.selectOptions(screen.getByRole("combobox", { name: "Layout" }), "list");
     await waitFor(() => expect(screen.queryByRole("table")).toBeNull());
+    await user.click(screen.getByRole("checkbox", { name: "Show owner" }));
+    await waitFor(() => expect(api.saveView).toHaveBeenCalledWith(expect.objectContaining({ id: 10, showOwner: false })));
     await user.click(screen.getByRole("button", { name: "Reading list" }));
     expect(screen.getByRole("columnheader", { name: "Owner" })).toBeTruthy();
   });
@@ -529,8 +965,8 @@ describe("Folio workspace", () => {
 
   it("creates a visible record under a filter and saves edits", async () => {
     const user = await openWorkspace();
-    vi.mocked(api.create).mockImplementation(async (databaseId, status) => {
-      data.records.push({ id: 11, databaseId, status, name: "Untitled", priority: "Medium", dueDate: null, owner: "" });
+    vi.mocked(api.createRecord).mockImplementation(async (databaseId) => {
+      data.records.push({ id: 11, databaseId, name: "Untitled", values: {} });
       return structuredClone(data);
     });
     vi.mocked(api.update).mockImplementation(async (input) => {
@@ -540,7 +976,8 @@ describe("Folio workspace", () => {
     await user.click(screen.getByRole("button", { name: "In progress" }));
     await user.click(screen.getByRole("button", { name: "New record" }));
     const dialog = await screen.findByRole("dialog");
-    expect(api.create).toHaveBeenCalledWith(1, "In progress");
+    expect(api.createRecord).toHaveBeenCalledWith(1);
+    expect(api.setRecordValue).toHaveBeenCalledWith(11, 10, { Status: 2 });
     await user.clear(within(dialog).getByLabelText("Name"));
     await user.type(within(dialog).getByLabelText("Name"), "A real project");
     await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
@@ -1006,7 +1443,7 @@ describe("Folio workspace", () => {
   it("Create calls api.createDatabase, selects the new database, and closes the dialog", async () => {
     const user = await openWorkspace();
     vi.mocked(api.createDatabase).mockImplementation(async (name) => {
-      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: "", customIcon: null });
+      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: "", customIcon: null, columns: [] });
       data.views.push({ id: 99, databaseId: 99, name: "All records", layout: "table", filterActive: false, sortActive: false, compact: false, showOwner: true });
       return structuredClone(data);
     });
@@ -1048,7 +1485,7 @@ describe("Folio workspace", () => {
   it("passes a selected emoji to creation and renders it in the sidebar", async () => {
     const user = await openWorkspace();
     vi.mocked(api.createDatabase).mockImplementation(async (name, icon) => {
-      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: icon?.emoji ?? "", customIcon: null });
+      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: icon?.emoji ?? "", customIcon: null, columns: [] });
       return structuredClone(data);
     });
     await user.click(screen.getByRole("button", { name: "New database" }));
@@ -1087,7 +1524,7 @@ describe("Folio workspace", () => {
     const uri = "data:image/png;base64,AAAA";
     vi.mocked(api.pickDatabaseIcon).mockResolvedValue(uri);
     vi.mocked(api.createDatabase).mockImplementation(async (name, icon) => {
-      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: "⭐", customIcon: icon?.customIcon ?? null });
+      data.databases.push({ id: 99, name, description: "", icon: "layers", emoji: "⭐", customIcon: icon?.customIcon ?? null, columns: [] });
       return structuredClone(data);
     });
     await user.click(screen.getByRole("button", { name: "New database" }));

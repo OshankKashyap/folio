@@ -1,3 +1,4 @@
+mod columns;
 mod database_icons;
 mod db;
 mod fonts;
@@ -5,6 +6,7 @@ mod tray;
 mod window_layout;
 
 use db::{AppError, Database, RecordInput, SavedView, Workspace};
+use columns::{ColumnOption, PropertyValue};
 use std::path::{Path, PathBuf};
 use tauri::{Manager, State};
 use tauri_plugin_autostart::ManagerExt;
@@ -153,10 +155,79 @@ async fn pick_database_icon(window: tauri::WebviewWindow) -> Result<Option<Strin
 async fn create_record(
     database: State<'_, Database>,
     database_id: i64,
-    status: String,
 ) -> Result<Workspace, AppError> {
     database
-        .run(move |connection| db::create_record(connection, database_id, &status))
+        .run(move |connection| db::create_record(connection, database_id))
+        .await
+}
+
+#[tauri::command]
+async fn create_column(
+    database: State<'_, Database>,
+    database_id: i64,
+    name: String,
+    column_type: String,
+    options: Option<Vec<ColumnOption>>,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| {
+            columns::create_column(connection, database_id, &name, &column_type, options)
+        })
+        .await
+}
+
+#[tauri::command]
+async fn rename_column(
+    database: State<'_, Database>,
+    column_id: i64,
+    name: String,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| columns::rename_column(connection, column_id, &name))
+        .await
+}
+
+#[tauri::command]
+async fn delete_column(
+    database: State<'_, Database>,
+    column_id: i64,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| columns::delete_column(connection, column_id))
+        .await
+}
+
+#[tauri::command]
+async fn set_column_options(
+    database: State<'_, Database>,
+    column_id: i64,
+    options: Vec<ColumnOption>,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| columns::set_column_options(connection, column_id, options))
+        .await
+}
+
+#[tauri::command]
+async fn set_record_value(
+    database: State<'_, Database>,
+    record_id: i64,
+    column_id: i64,
+    value: Option<PropertyValue>,
+) -> Result<Workspace, AppError> {
+    database
+        .run(move |connection| columns::set_record_value(connection, record_id, column_id, value))
+        .await
+}
+
+#[tauri::command]
+async fn add_inline_option(
+    database: State<'_, Database>,
+    column_id: i64,
+    label: String,
+) -> Result<(i64, Workspace), AppError> {
+    database
+        .run(move |connection| columns::add_inline_option(connection, column_id, &label))
         .await
 }
 
@@ -340,6 +411,12 @@ pub fn run() {
             create_database,
             pick_database_icon,
             create_record,
+            create_column,
+            rename_column,
+            delete_column,
+            set_column_options,
+            set_record_value,
+            add_inline_option,
             update_record,
             delete_record,
             get_record_page,

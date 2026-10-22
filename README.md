@@ -10,7 +10,9 @@ A local-first database workspace built with Tauri 2, Svelte 5, SvelteKit, TypeSc
 - Retractable sidebar with workspace identity
 - Table, status board, and list layouts over the same records
 - Per-database saved views with persistent layout, In progress filter, alphabetical sort, compact rows, and owner visibility
-- Create, edit, and delete records with name, status, priority, due date, and owner
+- Per-database dynamic typed columns: text, number, select, multiselect, checkbox, status, and date
+- Existing Status, Priority, Due date, and Owner fields and their values are migrated into real columns
+- Create, edit, and delete records; click table cells to edit their properties
 - Persistent manual row order using drag handles, move buttons, or Up/Down keys while a handle is focused; turn sorting off before reordering
 - Responsive layout, keyboard focus states, and recoverable save errors
 
@@ -58,7 +60,7 @@ Dev runs keep `folio.sqlite3` in Tauri’s application data directory; installed
 
 To back up the workspace, close Folio first, then copy the database file. Data is local but not encrypted; device access controls still apply.
 
-Custom properties, database management beyond creation (including editing existing icons), saved-view creation/deletion, advanced filters, board drag-and-drop, sync, authentication, and import/export are not included in this first implementation.
+Database management beyond creation (including editing existing icons), saved-view creation/deletion, advanced filters, board drag-and-drop, sync, authentication, and import/export are not included in this first implementation.
 
 ## Checks and builds
 

@@ -21,19 +21,22 @@
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import Table2 from "@lucide/svelte/icons/table-2";
   import X from "@lucide/svelte/icons/x";
-  import { api, errorMessage } from "$lib/api";
-  import { formatDate, visibleRecords } from "$lib/records";
-  import { statuses, type Layout, type RecordInput, type RecordItem, type SavedView, type WindowButtonOverride, type Workspace } from "$lib/types";
+  import { api, errorMessage, withDatabaseColumns } from "$lib/api";
+  import { formatDate, propertyValue, visibleRecords } from "$lib/records";
+  import { type Column, type ColumnOption, type ColumnType, type PropertyValue, type Layout, type RecordInput, type RecordItem, type SavedView, type WindowButtonOverride, type Workspace } from "$lib/types";
+  import { hasOptions } from "$lib/columns";
+  import ColumnHeader from "./ColumnHeader.svelte";
+  import PropertyCell from "./PropertyCell.svelte";
+  import OptionChip from "./OptionChip.svelte";
   import RecordEditor from "./RecordEditor.svelte";
   import RecordPage from "./RecordPage.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
-  import StatusBadge from "./StatusBadge.svelte";
   import WorkspaceSetup from "./WorkspaceSetup.svelte";
   import { accentInk } from "$lib/theme";
   import { applyFont, checkFontAvailable } from "$lib/fonts";
   import { uiState } from "$lib/uiState.svelte";
 
-  let workspace = $state<Workspace>({ settings: null, databases: [], views: [], records: [] });
+  let workspace = $state<Workspace>({ settings: null, databases: [], columns: [], views: [], records: [] });
   let loading = $state(true);
   let loadFailed = $state(false);
   let newDatabaseName = $state("");
@@ -94,7 +97,11 @@
   const database = $derived(workspace.databases.find((item) => item.id === databaseId) ?? workspace.databases[0]);
   const views = $derived(workspace.views.filter((item) => item.databaseId === database?.id));
   const view = $derived(views.find((item) => item.id === selectedViews[database?.id ?? 0]) ?? views[0]);
-  const rows = $derived(visibleRecords(workspace.records, view));
+  const columns = $derived(database?.columns ?? []);
+  const statusColumn = $derived(columns.find((column) => column.type === "status"));
+  const progressOption = $derived(statusColumn?.options?.find((option) => option.label === "In progress"));
+  const boardGroups = $derived([...(statusColumn?.options ?? []).map((option) => ({ id: option.id as number | null, option })), { id: null, option: null }]);
+  const rows = $derived(visibleRecords(workspace.records, view, columns));
   const selectedIndex = $derived(rows.findIndex((record) => record.id === selectedRow));
 
   onMount(() => { void load(); void api.isDevBuild().then((value) => { devBuild = value; }).catch(() => {}); });
@@ -134,6 +141,65 @@
     } finally {
       busy = false;
     }
+  }
+
+  async function mutateColumns(operation: () => Promise<Workspace>, next: Column[]): Promise<boolean> {
+    if (busy) return false;
+    const persisted = workspace;
+    workspace = withDatabaseColumns({ ...workspace, columns: next });
+    const saved = await mutate(operation);
+    if (!saved) workspace = persisted;
+    return saved;
+  }
+
+  async function createColumn(name: string, type: ColumnType): Promise<boolean> {
+    if (!database || busy) return false;
+    const id = database.id;
+    return mutateColumns(() => api.createColumn(id, name, type, hasOptions(type) ? [] : null), [...workspace.columns, { id: -1, databaseId: id, name, type, options: null, position: columns.length }]);
+  }
+
+  function renameColumn(column: Column, name: string): Promise<boolean> {
+    return mutateColumns(() => api.renameColumn(column.id, name), workspace.columns.map((item) => item.id === column.id ? { ...item, name } : item));
+  }
+
+  function deleteColumn(column: Column): Promise<boolean> {
+    return mutateColumns(() => api.deleteColumn(column.id), workspace.columns.filter((item) => item.id !== column.id));
+  }
+
+  function setColumnOptions(column: Column, options: ColumnOption[]): Promise<boolean> {
+    return mutateColumns(() => api.setColumnOptions(column.id, options), workspace.columns.map((item) => item.id === column.id ? { ...item, options } : item));
+  }
+
+  function saveCell(recordId: number, columnId: number, value: PropertyValue | null): Promise<boolean> {
+    return mutate(() => api.setRecordValue(recordId, columnId, value));
+  }
+
+  async function addInlineOption(columnId: number, label: string): Promise<number | null> {
+    let optionId: number | null = null;
+    const saved = await mutate(async () => {
+      const [id, updated] = await api.addInlineOption(columnId, label);
+      optionId = id;
+      return updated;
+    });
+    return saved ? optionId : null;
+  }
+
+  function recordStatus(record: RecordItem): number | null {
+    const value = statusColumn ? propertyValue(record, statusColumn) : null;
+    return value && "Status" in value ? value.Status : null;
+  }
+
+  function recordSummary(record: RecordItem): string {
+    return columns.filter((column) => column.type !== "status" && (view?.showOwner || column.name !== "Owner")).flatMap((column) => {
+      const value = propertyValue(record, column);
+      if (!value) return [];
+      if ("Text" in value) return value.Text;
+      if ("Date" in value) return formatDate(value.Date);
+      if ("Number" in value) return String(value.Number);
+      if ("Checkbox" in value) return value.Checkbox ? "✓" : "";
+      const ids = "Multi" in value ? value.Multi : "Select" in value ? [value.Select] : [];
+      return column.options?.filter((option) => ids.includes(option.id)).map((option) => `${option.emoji} ${option.label}`.trim()) ?? [];
+    }).join(" · ");
   }
 
   async function setupWorkspace(name: string, accentColor: string) {
@@ -312,10 +378,13 @@
   async function createRecord() {
     if (!database || !view || busy) return;
     const id = database.id;
-    const status = view.filterActive ? "In progress" : "To do";
     const existingIds = new Set(workspace.records.map((record) => record.id));
-    if (await mutate(() => api.create(id, status))) {
-      editing = workspace.records.find((record) => !existingIds.has(record.id)) ?? null;
+    const status = statusColumn;
+    const option = view.filterActive ? progressOption : status?.options?.find((item) => item.label === "To do");
+    if (await mutate(() => api.createRecord(id))) {
+      const record = workspace.records.find((item) => !existingIds.has(item.id));
+      if (record && status && option) await saveCell(record.id, status.id, { Status: option.id });
+      editing = record ?? null;
     }
   }
 
@@ -477,7 +546,7 @@
 
         {#if view}
           <div class="toolbar" aria-label="Database controls">
-            <button class:on={view.filterActive} aria-pressed={view.filterActive} disabled={busy} onclick={() => updateView({ filterActive: !view.filterActive })}><Filter size={15} />{view.filterActive ? "In progress ×" : "Filter"}</button>
+            <button class:on={view.filterActive && !!progressOption} aria-pressed={view.filterActive && !!progressOption} disabled={busy || (!progressOption && !view.filterActive)} title={!progressOption ? "Add an In progress option to a status column to use this filter." : undefined} onclick={() => updateView({ filterActive: !view.filterActive })}><Filter size={15} />{view.filterActive && progressOption ? "In progress ×" : "Filter"}</button>
             <button class:on={view.sortActive} aria-pressed={view.sortActive} title={view.sortActive ? "Turn off alphabetical sorting" : "Sort by name, A–Z"} disabled={busy} onclick={() => updateView({ sortActive: !view.sortActive })}><ArrowDownUp size={15} />Sort{view.sortActive ? " A–Z" : ""}</button>
             <button class:on={settingsOpen} aria-expanded={settingsOpen} aria-controls="view-options" onclick={() => settingsOpen = !settingsOpen}><SlidersHorizontal size={15} />View settings</button>
             <span class="spacer"></span>
@@ -488,7 +557,7 @@
             <section class="settings" id="view-options" aria-label="View settings">
               <label>Layout <span class="select-wrap"><select aria-label="Layout" value={view.layout} disabled={busy} onchange={(event) => { const layout = event.currentTarget.value as Layout; event.currentTarget.value = view.layout; void updateView({ layout }); }}><option value="table">Table</option><option value="board">Board</option><option value="list">List</option></select><ChevronDown size={14} /></span></label>
               <label>Compact rows <input type="checkbox" checked={view.compact} disabled={busy} onchange={(event) => { const compact = event.currentTarget.checked; event.currentTarget.checked = view.compact; void updateView({ compact }); }} /></label>
-              <label>Show owner <input type="checkbox" checked={view.showOwner} disabled={busy} onchange={(event) => { const showOwner = event.currentTarget.checked; event.currentTarget.checked = view.showOwner; void updateView({ showOwner }); }} /></label>
+              <label title="Applies to board and list summaries; tables show all columns.">Show owner <input type="checkbox" checked={view.showOwner} disabled={busy || view.layout === "table" || !columns.some((column) => column.name === "Owner")} onchange={(event) => { const showOwner = event.currentTarget.checked; event.currentTarget.checked = view.showOwner; void updateView({ showOwner }); }} /></label>
             </section>
           {/if}
 
@@ -500,7 +569,7 @@
             {#if view.layout === "table"}
               <div class="table-wrap">
                 <table>
-                  <thead><tr><th class="grip-cell" scope="col"><span class="sr-only">Reorder</span></th><th scope="col"><span class="column-icon">Aa</span> Name</th><th scope="col"><span class="column-icon">◉</span> Status</th><th scope="col">Priority</th><th scope="col">Due date</th>{#if view.showOwner}<th scope="col">Owner</th>{/if}</tr></thead>
+                  <thead><tr><th class="grip-cell" scope="col"><span class="sr-only">Reorder</span></th><th scope="col"><span class="column-icon">Aa</span> Name</th>{#each columns as column (column.id)}<th scope="col" class="dynamic-column"><ColumnHeader {column} {emojis} {busy} onCreate={createColumn} onRename={renameColumn} onDelete={deleteColumn} onOptions={setColumnOptions} /></th>{/each}<th scope="col"><ColumnHeader {emojis} {busy} onCreate={createColumn} onRename={renameColumn} onDelete={deleteColumn} onOptions={setColumnOptions} /></th></tr></thead>
                   <tbody>
                     {#each rows as record (record.id)}
                       <tr data-record-id={record.id} class:drop-before={drag?.moved && drag.targetId === record.id && drag.recordId !== record.id && !drag.after} class:drop-after={drag?.moved && drag.targetId === record.id && drag.recordId !== record.id && drag.after}>
@@ -510,10 +579,8 @@
                           </span>
                         </td>
                         <td class="name-cell"><button class="record-name" disabled={busy} onclick={() => edit(record)}>{record.name}</button></td>
-                        <td><StatusBadge status={record.status} /></td>
-                        <td class="muted">{record.priority}</td>
-                        <td class="muted"><span title={record.dueDate ?? "No due date"}>{formatDate(record.dueDate)}</span>{#if !view.showOwner}<button class="page-button" aria-label="Open page" title="Open page" disabled={busy} onclick={(event) => openPage(record.id, event.currentTarget)}><FileText size={13} />Page</button>{/if}</td>
-                        {#if view.showOwner}<td class="muted">{record.owner || "Unassigned"}<button class="page-button" aria-label="Open page" title="Open page" disabled={busy} onclick={(event) => openPage(record.id, event.currentTarget)}><FileText size={13} />Page</button></td>{/if}
+                        {#each columns as column (column.id)}<td class="dynamic-column"><PropertyCell {record} {column} {busy} onSave={saveCell} onAddOption={addInlineOption} /></td>{/each}
+                        <td class="row-actions"><button class="page-button" aria-label="Open page" title="Open page" disabled={busy} onclick={(event) => openPage(record.id, event.currentTarget)}><FileText size={13} />Page</button></td>
                       </tr>
                     {/each}
                   </tbody>
@@ -529,12 +596,12 @@
               {/if}
             {:else if view.layout === "board"}
               <div class="board">
-                {#each statuses as status}
-                  {@const cards = rows.filter((record) => record.status === status)}
-                  <section class="lane" aria-label={`${status} records`}>
-                    <header class="lane-title"><StatusBadge {status} /><span>{cards.length}</span></header>
+                {#each boardGroups as group (group.id)}
+                  {@const cards = rows.filter((record) => recordStatus(record) === group.id)}
+                  <section class="lane" aria-label={`${group.option?.label ?? "No status"} records`}>
+                    <header class="lane-title">{#if group.option}<OptionChip option={group.option} />{:else}<span>No status</span>{/if}<span>{cards.length}</span></header>
                     {#each cards as record (record.id)}
-                      <button class="record" disabled={busy} onclick={() => edit(record)}><span>{record.name}</span><small>{record.priority} · {formatDate(record.dueDate)}{view.showOwner ? ` · ${record.owner || "Unassigned"}` : ""}</small></button>
+                      <button class="record" disabled={busy} onclick={() => edit(record)}><span>{record.name}</span><small>{recordSummary(record)}</small></button>
                     {/each}
                     {#if cards.length === 0}<p class="lane-empty">No records</p>{/if}
                   </section>
@@ -543,7 +610,8 @@
             {:else}
               <div class="list">
                 {#each rows as record (record.id)}
-                  <button class="list-row" disabled={busy} onclick={() => edit(record)}><span>{record.name}</span><StatusBadge status={record.status} /></button>
+                  {@const option = statusColumn?.options?.find((item) => item.id === recordStatus(record))}
+                  <button class="list-row" disabled={busy} onclick={() => edit(record)}><span>{record.name}<small>{recordSummary(record)}</small></span>{#if option}<OptionChip {option} />{:else}<span>No status</span>{/if}</button>
                 {/each}
               </div>
             {/if}
@@ -633,47 +701,48 @@
   .sidebar-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 26px; font-weight: 600; letter-spacing: -.4px; font-size: 18px; }
   .logo { background: var(--accent); color: var(--accent-ink); border-radius: 7px; padding: 2px 8px; }
-  .caption { color: var(--sub); font-size: 11px; letter-spacing: 1px; padding: 20px 10px 8px; }
-  .db { width: 100%; margin: 2px 0; color: #b7b8c1; }
+  .caption { color: var(--sub); font-size: 11px; font-weight: 500; letter-spacing: 1px; padding: 20px 10px 8px; }
+  .db { width: 100%; margin: 2px 0; font-weight: 500; color: #b7b8c1; }
   .db.active { background: var(--accent-soft); color: var(--accent-text); }
-  .side-bottom { margin-top: auto; color: var(--sub); padding: 28px 10px 0; font-size: 12px; font-weight: 500; }
+  .side-bottom { margin-top: auto; color: var(--sub); padding: 28px 10px 0; font-size: 13px; font-weight: 500; }
   .side-bottom .identity-text { position: relative; }
   .side-bottom .identity-text div { padding-top: 8px; overflow-wrap: anywhere; }
-  .side-bottom small { font-size: 11px; color: #737680; }
+  .side-bottom small { font-size: 12px; color: #737680; }
   .avatar { background: var(--accent-soft); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; color: var(--accent-text); font-size: 11px; }
   .settings-button { position: absolute; top: 50%; right: 0; transform: translateY(-50%); color: var(--sub); }
   .settings-button:hover:not(:disabled) { color: var(--text); }
   main { position: relative; grid-column: 1; grid-row: 1; min-width: 0; }
   .sidebar-open > main { grid-column: 2; }
-  .chrome { min-height: 56px; border-bottom: 1px solid var(--line); padding: 0 22px; display: flex; align-items: center; gap: 12px; color: var(--sub); font-size: 12px; }
+  .chrome { min-height: 56px; border-bottom: 1px solid var(--line); padding: 0 22px; display: flex; align-items: center; gap: 12px; color: var(--sub); font-size: 13px; }
   .path { flex: 1; font-weight: 500; }
   .path > span:first-child { margin: 0 8px; color: #61636e; }
   .current-path { color: #c8c9d0; }
-  .local-indicator { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; white-space: nowrap; }
+  .local-indicator { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; white-space: nowrap; }
   .local-indicator > span { height: 5px; width: 5px; background: #91b29f; border-radius: 50%; }
   .content { padding: 30px 28px; }
-  .eyebrow { color: var(--sub); font-size: 12px; display: flex; gap: 8px; align-items: center; }
+  .eyebrow { color: var(--sub); font-size: 11px; font-weight: 500; letter-spacing: 1px; display: flex; gap: 8px; align-items: center; }
   h1 { font-size: 28px; letter-spacing: -1px; font-weight: 600; margin: 8px 0 4px; }
   .description { color: var(--sub); margin: 0 0 26px; font-size: 13px; }
   .tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-  .tabs button { border-radius: 0; padding: 10px 9px; color: var(--sub); border-bottom: 2px solid transparent; }
+  .tabs button { border-radius: 0; padding: 10px 9px; font-weight: 500; color: var(--sub); border-bottom: 2px solid transparent; }
   .tabs button.selected { color: var(--accent-text); border-bottom-color: var(--accent); }
-  .toolbar { display: flex; align-items: center; gap: 5px; padding: 16px 0; flex-wrap: wrap; font-size: 12px; }
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 16px 0; flex-wrap: wrap; font-size: 13px; font-weight: 500; }
   button.on { color: var(--accent-text); background: var(--accent-soft); }
-  .table-wrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 12px; font-weight: 500; }
-  th { font-weight: 500; color: var(--sub); background: #1c1d21; text-align: left; padding: 10px 12px; border: 1px solid var(--line); }
+  .table-wrap { overflow-x: auto; -webkit-user-select: none; user-select: none; }
+  .table-wrap :global(input) { -webkit-user-select: text; user-select: text; }
+  table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 13px; font-weight: 500; }
+  th { font-size: 14px; font-weight: 500; color: var(--sub); background: #1c1d21; text-align: left; padding: 10px 12px; border: 1px solid var(--line); }
   .column-icon { margin-right: 7px; color: #777a86; }
   td { padding: 13px 12px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
   td:first-child { border-left: 1px solid var(--line); }
   tr:hover td { background: #202126; }
-  td:last-child { position: relative; }
-  .page-button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); opacity: 0; pointer-events: none; background: #292a31; padding: 4px 6px; font-size: 11px; }
+  .row-actions { position: relative; min-width: 80px; }
+  .dynamic-column { width: 184px; min-width: 184px; max-width: 184px; }
+  .page-button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); opacity: 0; pointer-events: none; background: #292a31; padding: 4px 6px; font-size: 12px; }
   tr:hover .page-button, tr:focus-within .page-button { opacity: 1; pointer-events: auto; }
   .name-cell { min-width: 210px; width: 35%; }
   button.record-name { padding: 0; border-radius: 2px; color: #e8e8ec; }
   button.record-name:hover:not(:disabled) { background: none; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
-  .muted { color: var(--sub); }
   .grip-cell { width: 34px; padding: 3px 2px !important; border-right: 0; background: #18191c; }
   .row-grip { padding: 6px; color: #81838f; cursor: grab; touch-action: none; }
   .row-grip:hover:not(:disabled) { color: var(--accent-text); background: var(--accent-soft); }
@@ -684,8 +753,8 @@
   .move-actions { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; color: #bbb5cf; }
   .move-actions > span { margin-right: 6px; }
   .move-actions button { border: 1px solid #393540; background: #25222d; }
-  .footer { display: flex; justify-content: space-between; margin-top: 16px; color: #858994; font-size: 11px; gap: 12px; flex-wrap: wrap; }
-  .board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .footer { display: flex; justify-content: space-between; margin-top: 16px; color: #858994; font-size: 12px; gap: 12px; flex-wrap: wrap; }
+  .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
   .lane { background: #151619; padding: 10px; border-radius: 8px; }
   .lane-title { display: flex; justify-content: space-between; color: #a7a9b4; font-size: 12px; margin-bottom: 14px; }
   button.record { display: block; width: 100%; background: #222328; border: 1px solid #303138; border-radius: 7px; padding: 12px; margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
@@ -702,6 +771,7 @@
   .settings input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg); }
   .list-row { display: flex; width: 100%; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); border-radius: 0; padding: 14px 5px; font-size: 13px; }
   .list-row > span { overflow-wrap: anywhere; }
+  .list-row small { display: block; color: var(--sub); font-size: 11px; margin-top: 6px; }
   .empty { padding: 32px 12px; color: var(--sub); font-size: 13px; text-align: center; }
   .empty p { margin: 0 0 12px; }
   .load-state { padding: 80px 16px; max-width: 560px; margin: 0 auto; text-align: center; color: var(--sub); }

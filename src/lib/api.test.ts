@@ -1,10 +1,12 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { api } from "./api";
+import { fixture } from "./test-fixture";
+import type { PropertyValue } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(invoke).mockResolvedValue(fixture()); });
 
 it.each([false, true])("passes minimize-to-tray (%j) through the typed command boundary", async (minimizeToTray) => {
   await api.setMinimizeToTray(minimizeToTray);
@@ -40,4 +42,49 @@ it.each([null, "data:image/png;base64,AAAA"])("returns the native icon chooser r
   vi.mocked(invoke).mockResolvedValueOnce(result);
   expect(await api.pickDatabaseIcon()).toBe(result);
   expect(invoke).toHaveBeenCalledWith("pick_database_icon");
+});
+
+it("derives per-database columns from the unchanged flat workspace payload", async () => {
+  vi.mocked(isTauri).mockReturnValue(true);
+  const payload = fixture();
+  const raw = { ...payload, databases: payload.databases.map(({ columns: _columns, ...database }) => database) };
+  vi.mocked(invoke).mockResolvedValue(raw);
+  const workspace = await api.load();
+  expect(workspace.columns).toEqual(raw.columns);
+  expect(workspace.databases[0].columns).toEqual(raw.columns.filter((column) => column.databaseId === 1));
+  expect(raw.databases[0]).not.toHaveProperty("columns");
+});
+
+it("creates records without a status and updates only the title", async () => {
+  await api.createRecord(1);
+  expect(invoke).toHaveBeenLastCalledWith("create_record", { databaseId: 1 });
+  await api.update({ id: 2, name: "Renamed" });
+  expect(invoke).toHaveBeenLastCalledWith("update_record", { input: { id: 2, name: "Renamed" } });
+});
+
+it("passes all column mutations through the camelCase boundary", async () => {
+  const options = [{ id: 7, label: "Ready", emoji: "⭐", color: "blue" as const }];
+  await api.createColumn(1, "State", "status", options);
+  expect(invoke).toHaveBeenLastCalledWith("create_column", { databaseId: 1, name: "State", columnType: "status", options });
+  await api.createColumn(1, "Notes", "text", null);
+  expect(invoke).toHaveBeenLastCalledWith("create_column", { databaseId: 1, name: "Notes", columnType: "text", options: null });
+  await api.renameColumn(2, "Renamed");
+  expect(invoke).toHaveBeenLastCalledWith("rename_column", { columnId: 2, name: "Renamed" });
+  await api.deleteColumn(2);
+  expect(invoke).toHaveBeenLastCalledWith("delete_column", { columnId: 2 });
+  await api.setColumnOptions(2, options);
+  expect(invoke).toHaveBeenLastCalledWith("set_column_options", { columnId: 2, options });
+});
+
+it.each<PropertyValue | null>([{ Text: "hello" }, { Number: 2.5 }, { Select: 1 }, { Multi: [1, 2] }, { Checkbox: true }, { Status: 2 }, { Date: "2024-02-29" }, null])("preserves externally tagged cell values (%j)", async (value) => {
+  await api.setRecordValue(1, 2, value);
+  expect(invoke).toHaveBeenCalledWith("set_record_value", { recordId: 1, columnId: 2, value });
+});
+
+it("returns inline options as [optionId, normalized workspace]", async () => {
+  vi.mocked(invoke).mockResolvedValueOnce([7, fixture()]);
+  const [id, workspace] = await api.addInlineOption(2, "Ready");
+  expect(invoke).toHaveBeenCalledWith("add_inline_option", { columnId: 2, label: "Ready" });
+  expect(id).toBe(7);
+  expect(workspace.databases[0].columns).toEqual(workspace.columns.filter((column) => column.databaseId === 1));
 });
